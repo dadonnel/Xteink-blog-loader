@@ -1,154 +1,142 @@
-import importlib.util
-import sys
-import threading
-from datetime import datetime, timezone
+from __future__ import annotations
+
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, redirect, render_template_string, request, url_for
+
+from opml_store import OPMLStore, ValidationError
+
 
 app = Flask(__name__)
-_run_lock = threading.Lock()
+store = OPMLStore(Path(__file__).resolve().parent.parent / "feeds.opml")
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
-from xteink_client import upload_epubs
-
-PIPELINE_SCRIPT = PROJECT_ROOT / "3dayblogs.py"
-
-INDEX_HTML = """
+PAGE_TEMPLATE = """
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>XTEink Blog Runner</title>
-  <style>
-    body { font-family: sans-serif; margin: 2rem; }
-    button { padding: 0.6rem 1rem; font-size: 1rem; }
-    pre { background: #f5f5f5; padding: 1rem; border-radius: 8px; overflow: auto; }
-  </style>
-</head>
-<body>
-  <h1>Run Blog Generation + Upload</h1>
-  <button id="runBtn">Run now</button>
-  <pre id="output">Idle.</pre>
-  <script>
-    const output = document.getElementById("output");
-    const runBtn = document.getElementById("runBtn");
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Feed Manager</title>
+    <style>
+      body { font-family: sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+      .error { background: #ffe5e5; border: 1px solid #b00; color: #600; padding: .75rem; margin-bottom: 1rem; }
+      .success { background: #e9ffe9; border: 1px solid #2a7; color: #153; padding: .75rem; margin-bottom: 1rem; }
+      form { margin: 1rem 0; }
+      input { margin-right: .5rem; padding: .3rem .4rem; }
+      button { padding: .3rem .7rem; }
+      ul { padding-left: 1.2rem; }
+      li { margin-bottom: .35rem; }
+      .feed-row { display: flex; align-items: center; gap: .5rem; }
+      .url { color: #555; font-size: .9rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Feed Manager</h1>
 
-    function renderResult(payload) {
-      const lines = [];
-      lines.push(`Generation started: ${payload.generation_started_at}`);
-      lines.push(`Generation finished: ${payload.generation_finished_at}`);
-      lines.push("");
-      lines.push("Generated file path(s):");
-      (payload.generated_paths || []).forEach((p) => lines.push(`- ${p}`));
-      if (!payload.generated_paths || payload.generated_paths.length === 0) {
-        lines.push("- none");
-      }
-      lines.push("");
-      lines.push("Upload outcome per file:");
-      const results = payload.upload?.results || [];
-      results.forEach((r) => {
-        const status = r.uploaded ? "SUCCESS" : "FAILED";
-        lines.push(`- ${r.file_path}: ${status}`);
-        if (r.status_code) lines.push(`    status_code=${r.status_code} (${r.reason || ""})`);
-        if (r.error) lines.push(`    error=${r.error}`);
-      });
-      if (results.length === 0) {
-        lines.push("- no uploads attempted");
-      }
-      if (payload.error) {
-        lines.push("");
-        lines.push(`Pipeline error: ${payload.error}`);
-      }
-      output.textContent = lines.join("\n");
-    }
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    {% if success %}<div class="success">{{ success }}</div>{% endif %}
 
-    runBtn.addEventListener("click", async () => {
-      runBtn.disabled = true;
-      output.textContent = "Generation started...";
-      try {
-        const res = await fetch("/run-now", { method: "POST" });
-        const payload = await res.json();
-        if (!res.ok) {
-          output.textContent = payload.error || `Request failed with status ${res.status}`;
-        } else {
-          renderResult(payload);
-        }
-      } catch (err) {
-        output.textContent = `Error: ${err.message}`;
-      } finally {
-        runBtn.disabled = false;
-      }
-    });
-  </script>
-</body>
+    <h2>Add Feed</h2>
+    <form method="post" action="{{ url_for('add_feed') }}">
+      <input name="name" placeholder="Feed Name" value="{{ form_data.get('name', '') }}" required />
+      <input name="url" placeholder="https://example.com/feed.xml" value="{{ form_data.get('url', '') }}" required />
+      <input name="category" placeholder="Category (optional)" value="{{ form_data.get('category', '') }}" />
+      <button type="submit">Add Feed</button>
+    </form>
+
+    <h2>Current Feeds</h2>
+    {% if not feeds %}
+      <p>No feeds configured yet.</p>
+    {% endif %}
+
+    {% for category, feed_items in feeds.items() %}
+      <h3>{{ category }}</h3>
+      <ul>
+        {% for feed in feed_items %}
+        <li>
+          <div class="feed-row">
+            <strong>{{ feed.name }}</strong>
+            <span class="url">{{ feed.url }}</span>
+            <form method="post" action="{{ url_for('delete_feed') }}" style="display:inline">
+              <input type="hidden" name="feed_id" value="{{ feed.feed_id }}" />
+              <button type="submit">Delete</button>
+            </form>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endfor %}
+  </body>
 </html>
 """
 
 
-def _load_pipeline_module():
-    spec = importlib.util.spec_from_file_location("blog_pipeline", PIPELINE_SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
 @app.get("/")
 def index():
-    return render_template_string(INDEX_HTML)
-
-
-@app.post("/run-now")
-def run_now():
-    if not _run_lock.acquire(blocking=False):
-        return jsonify({"ok": False, "error": "A generation run is already in progress."}), 409
-
-    started_at = datetime.now(timezone.utc).isoformat()
-    payload = {
-        "ok": False,
-        "generation_started_at": started_at,
-        "generation_finished_at": None,
-        "generated_paths": [],
-        "upload": {"results": []},
-        "error": None,
+    error = request.args.get("error")
+    success = request.args.get("success")
+    form_data = {
+        "name": request.args.get("name", ""),
+        "url": request.args.get("url", ""),
+        "category": request.args.get("category", ""),
     }
+    feeds = store.parse_feeds()
+    return render_template_string(
+        PAGE_TEMPLATE,
+        feeds=feeds,
+        error=error,
+        success=success,
+        form_data=form_data,
+    )
+
+
+@app.post("/feeds")
+def add_feed():
+    name = request.form.get("name", "")
+    url = request.form.get("url", "")
+    category = request.form.get("category", "")
+
+    if not name.strip() or not url.strip():
+        return redirect(
+            url_for(
+                "index",
+                error="Name and URL are required.",
+                name=name,
+                url=url,
+                category=category,
+            )
+        )
 
     try:
-        pipeline_module = _load_pipeline_module()
-        generation = pipeline_module.run_generation_pipeline()
-        payload["generated_paths"] = generation.get("generated_paths", [])
-        payload["error"] = generation.get("error")
-
-        if generation.get("ok") and payload["generated_paths"]:
-            payload["upload"] = upload_epubs(
-                payload["generated_paths"],
-                device_host="192.168.1.211",
-                upload_path="/api/upload",
-                ping_before_upload=True,
+        store.append_feed(name=name, url=url, category=category)
+    except ValidationError as exc:
+        return redirect(
+            url_for(
+                "index",
+                error=str(exc),
+                name=name,
+                url=url,
+                category=category,
             )
-        else:
-            payload["upload"] = {
-                "device_host": "192.168.1.211",
-                "endpoint": "http://192.168.1.211/api/upload",
-                "ping": {"ok": None, "message": "skipped"},
-                "results": [],
-            }
+        )
 
-        payload["ok"] = generation.get("ok", False)
-        payload["generation_finished_at"] = datetime.now(timezone.utc).isoformat()
-        return jsonify(payload)
-    except Exception as exc:
-        payload["error"] = str(exc)
-        payload["generation_finished_at"] = datetime.now(timezone.utc).isoformat()
-        return jsonify(payload), 500
-    finally:
-        _run_lock.release()
+    return redirect(url_for("index", success="Feed added successfully."))
+
+
+@app.post("/feeds/delete")
+def delete_feed():
+    url = request.form.get("url", "")
+    feed_id = request.form.get("feed_id", "")
+
+    try:
+        deleted = store.delete_feed(url=url, feed_id=feed_id)
+    except ValidationError as exc:
+        return redirect(url_for("index", error=str(exc)))
+
+    if not deleted:
+        return redirect(url_for("index", error="Feed not found."))
+    return redirect(url_for("index", success="Feed removed successfully."))
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=False)
+    app.run(debug=True)
