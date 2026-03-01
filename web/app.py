@@ -1,16 +1,20 @@
 import importlib.util
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string
 
-from xteink_client import upload_epubs
-
 app = Flask(__name__)
 _run_lock = threading.Lock()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from xteink_client import upload_epubs
+
 PIPELINE_SCRIPT = PROJECT_ROOT / "3dayblogs.py"
 
 INDEX_HTML = """

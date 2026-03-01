@@ -71,22 +71,6 @@ def upload_epubs(
     if ping_before_upload:
         ping_ok, ping_message = ping_device(device_host)
 
-    if ping_before_upload and not ping_ok:
-        for path in epub_paths:
-            results.append(
-                UploadResult(
-                    file_path=path,
-                    uploaded=False,
-                    error=f"pre-check ping failed: {ping_message}",
-                )
-            )
-        return {
-            "device_host": device_host,
-            "endpoint": endpoint,
-            "ping": {"ok": ping_ok, "message": ping_message},
-            "results": [item.to_dict() for item in results],
-        }
-
     for path in epub_paths:
         if not os.path.exists(path):
             results.append(UploadResult(file_path=path, uploaded=False, error="file not found"))
