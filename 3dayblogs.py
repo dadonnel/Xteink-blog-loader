@@ -13,9 +13,13 @@ import ssl
 if hasattr(ssl, '_create_unverified_context'):
     ssl._create_default_https_context = ssl._create_unverified_context
 
-OUTPUT_DIR = "storage/downloads/rss_epub/output_epubs"
-SOURCES_FILE = "storage/downloads/rss_epub/feeds.opml"  # Changed to OPML
-DAYS_BACK = 3
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", "storage/downloads/rss_epub/output_epubs")
+SOURCES_FILE = os.getenv("SOURCES_FILE", "storage/downloads/rss_epub/feeds.opml")  # Changed to OPML
+DAYS_BACK = int(os.getenv("DAYS_BACK", "3"))
+
+# Fallback to repository-local OPML when the default path is not present
+if not os.path.exists(SOURCES_FILE) and os.path.exists("feeds.opml"):
+    SOURCES_FILE = "feeds.opml"
 
 # Set User-Agent globally for feedparser
 feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
