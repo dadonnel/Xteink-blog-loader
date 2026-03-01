@@ -24,42 +24,44 @@ if not os.path.exists(SOURCES_FILE) and os.path.exists("feeds.opml"):
 # Set User-Agent globally for feedparser
 feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 
+
 def load_sources(path=SOURCES_FILE):
     """Parses an OPML file to extract feed URLs."""
     if not os.path.exists(path):
         print(f"ERROR: {path} not found. Make sure {SOURCES_FILE} is in the folder.")
         return []
-    
+
     feeds = []
     try:
         tree = ET.parse(path)
         root = tree.getroot()
-        
+
         # In OPML, feeds are <outline> tags with an 'xmlUrl' attribute.
         # We search recursively (.//) to find them inside category folders.
         for outline in root.findall(".//outline[@xmlUrl]"):
             # Prefer 'text' or 'title' for the name
             name = outline.get("text") or outline.get("title") or "Untitled Feed"
             url = outline.get("xmlUrl")
-            
+
             if url:
                 feeds.append({"name": name, "url": url})
-                
+
         print(f"Loaded {len(feeds)} feeds from OPML.")
-        
+
     except Exception as e:
         print(f"ERROR parsing OPML file: {e}")
         return []
-        
+
     return feeds
+
 
 def is_recent(entry, days_back=DAYS_BACK):
     # If no date, assume it's recent (better to have duplicates than miss content)
     if not hasattr(entry, "published_parsed") and not hasattr(entry, "updated_parsed"):
         return True, "No date found (defaulting to True)"
-        
+
     parsed = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
-    
+
     if not parsed:
         return True, "Date unparseable (defaulting to True)"
 
@@ -72,6 +74,7 @@ def is_recent(entry, days_back=DAYS_BACK):
         return False, f"{delta} days ago (Too old)"
     except Exception as e:
         return True, f"Date error: {e} (defaulting to True)"
+
 
 def fetch_weekly_urls(feeds):
     urls = []
@@ -94,17 +97,18 @@ def fetch_weekly_urls(feeds):
                 print(f"  Invalid RSS or no entries: {feed['url']}")
         except Exception as e:
             print(f"  Feed error {feed['name']}: {e}")
-    
+
     # dedupe
     seen = set()
     unique = [item for item in urls if item["url"] not in seen and not seen.add(item["url"])]
     return unique
 
+
 def clean_html_strict(soup):
     """Attempt to extract clean paragraphs and headers only."""
     target_tags = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'ul', 'ol', 'li']
     parts = []
-    
+
     # Locate main content container
     main_selectors = ['article', 'main', '.post', '.entry-content', '.article-body', '[role="main"]', '.content', '#content']
     content = None
@@ -124,14 +128,16 @@ def clean_html_strict(soup):
         if hasattr(elem, 'attrs'):
             elem.attrs = {k: v for k, v in elem.attrs.items() if k in ['href', 'src', 'alt']}
         parts.append(str(elem))
-        
+
     return '\n'.join(parts)
+
 
 def clean_html_fallback(soup):
     """If strict fails, just strip script/style and return what's left."""
     for tag in soup(['script', 'style', 'nav', 'footer', 'iframe']):
         tag.decompose()
     return str(soup)
+
 
 def fetch_and_extract(url):
     try:
@@ -149,10 +155,10 @@ def fetch_and_extract(url):
     # Remove strict garbage
     for unwanted in soup(["script", "style", "nav", "footer", "header", "aside", "form", "button", "iframe"]):
         unwanted.decompose()
-        
+
     # Attempt Strict Cleaning
     clean_content = clean_html_strict(soup)
-    
+
     # Fallback if content is too short (likely failed to find 'p' tags)
     if len(clean_content) < 500:
         print("    (Strict cleaning returned little text, using fallback...)")
@@ -172,13 +178,14 @@ def fetch_and_extract(url):
     """
     return header + clean_content
 
+
 def build_epub(articles, out_dir=OUTPUT_DIR):
     if not os.path.exists(out_dir):
         os.makedirs(out_dir, exist_ok=True)
 
     today = datetime.date.today().isoformat()
     book_title = f"GenAI Weekly - {today}"
-    
+
     book = epub.EpubBook()
     book.set_identifier(f"genai-weekly-{today}")
     book.set_title(book_title)
@@ -203,7 +210,7 @@ def build_epub(articles, out_dir=OUTPUT_DIR):
         safe_title = art["title"][:80] + "..." if len(art["title"]) > 80 else art["title"]
         # Basic HTML wrapper
         c_content = f"<html><head><title>{safe_title}</title><link rel='stylesheet' href='style.css'/></head><body>{art['content']}</body></html>"
-        
+
         c = epub.EpubHtml(title=safe_title, file_name=f"chap_{idx:02d}.xhtml", lang="en")
         c.set_content(c_content.encode('utf-8'))
         book.add_item(c)
@@ -219,43 +226,66 @@ def build_epub(articles, out_dir=OUTPUT_DIR):
     epub.write_epub(out_path, book)
     return out_path
 
-def main():
-    print("--- GenAI Weekly Generator ---")
+
+def run_generation_pipeline():
+    """Run the generation flow and return a machine-readable summary."""
     feeds = load_sources()
     if not feeds:
-        print("No feeds loaded.")
-        return
+        return {"ok": False, "error": "No feeds loaded.", "generated_paths": []}
 
     urls = fetch_weekly_urls(feeds)
     print(f"\nTotal unique URLs found: {len(urls)}")
-    
     if not urls:
-        print("No recent articles found in any feed.")
-        return
+        return {"ok": False, "error": "No recent articles found in any feed.", "generated_paths": []}
 
     articles = []
     for meta in urls:
         print(f"Processing: {meta['title'][:40]}...")
         extracted = fetch_and_extract(meta["url"])
         if extracted:
-            articles.append({"title": meta["title"], "url": meta["url"], "source": meta["source"], "content": extracted})
+            articles.append(
+                {
+                    "title": meta["title"],
+                    "url": meta["url"],
+                    "source": meta["source"],
+                    "content": extracted,
+                }
+            )
             print("  OK")
         else:
             print("  Failed")
 
     if not articles:
-        print("\nERROR: Found URLs but failed to extract content from all of them.")
-        return
+        return {
+            "ok": False,
+            "error": "Found URLs but failed to extract content from all of them.",
+            "generated_paths": [],
+        }
 
     print(f"\nBuilding EPUB with {len(articles)} articles...")
     out_path = build_epub(articles)
     print(f"Success! EPUB saved to: {out_path}")
-    
+
     sync_dir = os.path.join(OUTPUT_DIR, "xteink_sync")
     os.makedirs(sync_dir, exist_ok=True)
     xteink_path = os.path.join(sync_dir, os.path.basename(out_path))
     shutil.copy2(out_path, xteink_path)
     print(f"Synced to: {xteink_path}")
+
+    return {
+        "ok": True,
+        "error": None,
+        "article_count": len(articles),
+        "generated_paths": [out_path, xteink_path],
+    }
+
+
+def main():
+    print("--- GenAI Weekly Generator ---")
+    result = run_generation_pipeline()
+    if not result.get("ok"):
+        print(f"\nERROR: {result.get('error')}")
+
 
 if __name__ == "__main__":
     main()
