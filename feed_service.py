@@ -148,10 +148,14 @@ def validate_feeds(feeds: List[Dict[str, str]], timeout_s: int = 10, max_workers
     results: List[FeedValidationResult] = []
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(_fetch_feed, feed, timeout_s) for feed in feeds]
-        for future in as_completed(futures):
-            results.append(future.result())
+        future_to_index = {
+            executor.submit(_fetch_feed, feed, timeout_s): idx
+            for idx, feed in enumerate(feeds)
+        }
+        indexed_results = []
+        for future in as_completed(future_to_index):
+            indexed_results.append((future_to_index[future], future.result()))
 
-    order = {feed["name"]: idx for idx, feed in enumerate(feeds)}
-    results.sort(key=lambda item: order.get(item.feed, 0))
+    indexed_results.sort(key=lambda item: item[0])
+    results = [result for _, result in indexed_results]
     return results
