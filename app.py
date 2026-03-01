@@ -19,7 +19,10 @@ def load_sources(path: str = SOURCES_FILE):
         return []
 
     feeds = []
-    tree = ET.parse(path)
+    try:
+        tree = ET.parse(path)
+    except ET.ParseError:
+        return []
     root = tree.getroot()
 
     for outline in root.findall('.//outline[@xmlUrl]'):
