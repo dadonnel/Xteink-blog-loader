@@ -1,0 +1,18 @@
+[Unit]
+Description=Morning EPUB generation and upload sync loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/workspace/Xteink-blog-loader
+ExecStart=/usr/bin/env python3 /workspace/Xteink-blog-loader/morning_sync.py
+Restart=always
+RestartSec=10
+
+# Optional overrides (uncomment and edit):
+# Environment="MORNING_SYNC_HOST=192.168.1.211"
+# Environment="MORNING_SYNC_UPLOAD_CMD=scp {file} root@{host}:/mnt/onboard/"
+
+[Install]
+WantedBy=multi-user.target
