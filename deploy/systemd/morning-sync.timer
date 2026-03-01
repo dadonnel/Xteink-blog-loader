@@ -1,0 +1,10 @@
+[Unit]
+Description=Start morning-sync service on boot
+
+[Timer]
+OnBootSec=1min
+Persistent=true
+Unit=morning-sync.service
+
+[Install]
+WantedBy=timers.target
