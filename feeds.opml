@@ -1,0 +1,41 @@
+<?xml version='1.0' encoding='utf-8'?>
+<opml version="2.0">
+    <head>
+        <title>Daniel's Subscriptions</title>
+    </head>
+    <body>
+        <outline text="Civic Tech &amp; Urbanism" title="Civic Tech &amp; Urbanism">
+            <outline type="rss" text="Strong Towns" title="Strong Towns" xmlUrl="https://www.strongtowns.org/journal?format=rss" />
+            <outline type="rss" text="Code for America" title="Code for America" xmlUrl="https://www.codeforamerica.org/news/feed/" />
+            <outline type="rss" text="Civic Tech Guide" title="Civic Tech Guide" xmlUrl="https://civictech.guide/feed/" />
+        </outline>
+        <outline text="Engineering &amp; Code" title="Engineering &amp; Code">
+            <outline type="rss" text="Simon Willison's Weblog" title="Simon Willison's Weblog" xmlUrl="https://simonwillison.net/atom/entries/" />
+            <outline type="rss" text="Simon Willison (Links)" title="Simon Willison (Links)" xmlUrl="https://simonwillison.net/atom/links/" />
+            <outline type="rss" text="Jeff Geerling" title="Jeff Geerling" xmlUrl="https://www.jeffgeerling.com/blog.xml" />
+            <outline type="rss" text="Real Python" title="Real Python" xmlUrl="https://realpython.com/atom.xml" />
+            <outline type="rss" text="n8n Blog" title="n8n Blog" xmlUrl="https://blog.n8n.io/rss" />
+            <outline type="rss" text="Make.com" title="Make.com" xmlUrl="https://rsshub.app/make/blog" />
+            <outline type="rss" text="Cursor IDE Changelog" title="Cursor IDE Changelog" xmlUrl="https://cursor.com/atom.xml" />
+            <outline type="rss" text="Tom Bedor" title="Tom Bedor" xmlUrl="https://tombedor.dev/rss.xml" />
+        </outline>
+        <outline text="AI &amp; Research" title="AI &amp; Research">
+            <outline type="rss" text="Anthropic News" title="Anthropic News" xmlUrl="https://www.anthropic.com/news/rss.xml" />
+            <outline type="rss" text="OpenAI Blog" title="OpenAI Blog" xmlUrl="https://openai.com/blog/rss/" />
+            <outline type="rss" text="OpenAI Developer" title="OpenAI Developer" xmlUrl="https://developers.openai.com/blog/rss.xml" />
+            <outline type="rss" text="DeepMind Blog" title="DeepMind Blog" xmlUrl="https://deepmind.google/discover/blog/rss/" />
+            <outline type="rss" text="Hugging Face Blog" title="Hugging Face Blog" xmlUrl="https://huggingface.co/blog/feed.xml" />
+            <outline type="rss" text="LangChain Blog" title="LangChain Blog" xmlUrl="https://blog.langchain.dev/rss.xml" />
+            <outline type="rss" text="Ollama Blog" title="Ollama Blog" xmlUrl="https://ollama.com/blog/rss.xml" />
+            <outline type="rss" text="The Neuron" title="The Neuron" xmlUrl="https://feeds.buzzsprout.com/2357618.rss" />
+            <outline type="rss" text="Ben's Bites" title="Ben's Bites" xmlUrl="https://rss.beehiiv.com/feeds/bensbites.xml" />
+            <outline type="rss" text="KDnuggets" title="KDnuggets" xmlUrl="https://www.kdnuggets.com/feed" />
+            <outline type="rss" text="MarkTechPost" title="MarkTechPost" xmlUrl="https://www.marktechpost.com/feed" />
+        </outline>
+        <outline text="Home Lab &amp; Maker" title="Home Lab &amp; Maker">
+            <outline type="rss" text="Home Assistant" title="Home Assistant" xmlUrl="https://www.home-assistant.io/atom.xml" />
+            <outline type="rss" text="Hackaday" title="Hackaday" xmlUrl="https://hackaday.com/blog/feed/" />
+            <outline type="rss" text="Prusa3D" title="Prusa3D" xmlUrl="https://blog.prusa3d.com/feed/" />
+            </outline>
+    </body>
+</opml>
