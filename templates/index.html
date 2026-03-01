@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Feed Validator</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    button { padding: 8px 14px; font-size: 14px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background: #f5f5f5; }
+    .ok { color: #08660f; font-weight: 600; }
+    .error { color: #b00020; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Feed Validation</h1>
+  <button id="validateBtn">Validate feeds</button>
+  <p id="message"></p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Feed</th>
+        <th>1 day</th>
+        <th>7 days</th>
+        <th>30 days</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody id="resultsBody"></tbody>
+  </table>
+
+  <script>
+    const button = document.getElementById('validateBtn');
+    const body = document.getElementById('resultsBody');
+    const message = document.getElementById('message');
+
+    function renderRows(results) {
+      body.innerHTML = '';
+      for (const row of results) {
+        const tr = document.createElement('tr');
+        const statusText = row.status === 'ok' ? 'ok' : `error: ${row.reason || 'unknown'}`;
+        tr.innerHTML = `
+          <td>${row.feed}</td>
+          <td>${row['1 day']}</td>
+          <td>${row['7 days']}</td>
+          <td>${row['30 days']}</td>
+          <td class="${row.status}">${statusText}</td>
+        `;
+        body.appendChild(tr);
+      }
+    }
+
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      message.textContent = 'Validating feeds...';
+      try {
+        const response = await fetch('/validate', { method: 'POST' });
+        const result = await response.json();
+        renderRows(result);
+        message.textContent = `Validated ${result.length} feed(s).`;
+      } catch (error) {
+        message.textContent = `Validation failed: ${error.message}`;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
