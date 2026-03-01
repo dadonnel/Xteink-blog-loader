@@ -1,18 +1,10 @@
 #!/usr/bin/env python3
-import os
-import datetime
-import feedparser
-import requests
-import xml.etree.ElementTree as ET
-from ebooklib import epub
-import shutil
-from bs4 import BeautifulSoup
-import ssl
+"""CLI wrapper for RSS -> EPUB workflow."""
 
-# Fix for some SSL errors on older setups
-if hasattr(ssl, '_create_unverified_context'):
-    ssl._create_default_https_context = ssl._create_unverified_context
+from __future__ import annotations
 
+import sys
+from pathlib import Path
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "storage/downloads/rss_epub/output_epubs")
 SOURCES_FILE = os.getenv("SOURCES_FILE", "storage/downloads/rss_epub/feeds.opml")  # Changed to OPML
 DAYS_BACK = int(os.getenv("DAYS_BACK", "3"))
@@ -21,9 +13,19 @@ DAYS_BACK = int(os.getenv("DAYS_BACK", "3"))
 if not os.path.exists(SOURCES_FILE) and os.path.exists("feeds.opml"):
     SOURCES_FILE = "feeds.opml"
 
-# Set User-Agent globally for feedparser
-feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
+from rss_epub.config import OUTPUT_DIR
+from rss_epub.epub_service import EpubService
+from rss_epub.feed_service import FeedService
+from rss_epub.opml_store import OpmlStore
+from rss_epub.xteink_client import XteinkClient
+
+
+def main() -> None:
+    print("--- GenAI Weekly Generator ---")
+
+    feeds = OpmlStore().load_sources()
 
 def load_sources(path=SOURCES_FILE):
     """Parses an OPML file to extract feed URLs."""
@@ -233,15 +235,16 @@ def run_generation_pipeline():
     if not feeds:
         return {"ok": False, "error": "No feeds loaded.", "generated_paths": []}
 
-    urls = fetch_weekly_urls(feeds)
+    feed_service = FeedService()
+    urls = feed_service.fetch_weekly_urls(feeds)
     print(f"\nTotal unique URLs found: {len(urls)}")
     if not urls:
         return {"ok": False, "error": "No recent articles found in any feed.", "generated_paths": []}
 
-    articles = []
+    articles: list[dict[str, str]] = []
     for meta in urls:
         print(f"Processing: {meta['title'][:40]}...")
-        extracted = fetch_and_extract(meta["url"])
+        extracted = feed_service.fetch_and_extract(meta["url"])
         if extracted:
             articles.append(
                 {
@@ -263,14 +266,13 @@ def run_generation_pipeline():
         }
 
     print(f"\nBuilding EPUB with {len(articles)} articles...")
-    out_path = build_epub(articles)
+    out_path = EpubService().build_epub(articles)
     print(f"Success! EPUB saved to: {out_path}")
 
-    sync_dir = os.path.join(OUTPUT_DIR, "xteink_sync")
-    os.makedirs(sync_dir, exist_ok=True)
-    xteink_path = os.path.join(sync_dir, os.path.basename(out_path))
-    shutil.copy2(out_path, xteink_path)
-    print(f"Synced to: {xteink_path}")
+    synced_path = XteinkClient().sync_local_copy(out_path)
+    print(f"Synced to: {synced_path}")
+    print(f"Output directory: {OUTPUT_DIR}")
+
 
     return {
         "ok": True,
