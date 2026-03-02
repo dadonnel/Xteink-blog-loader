@@ -76,6 +76,9 @@ Environment variable overrides are also supported:
 - `MORNING_SYNC_HOST`
 - `MORNING_SYNC_UPLOAD_CMD`
 - `MORNING_SYNC_GENERATOR_CMD`
+- `MORNING_SYNC_REACHABILITY_METHOD` (`auto`, `ping`, or `tcp`; default `auto`)
+- `MORNING_SYNC_TCP_PORT` (used for `tcp`/`auto`, default `22`)
+- `MORNING_SYNC_CONNECT_TIMEOUT` (seconds, default `1.0`)
 
 ### Run morning sync as a systemd service
 
@@ -128,6 +131,17 @@ Then open `http://127.0.0.1:5000/` and click **Validate feeds** to:
 - Fetch all configured feed URLs from `feeds.opml`.
 - Validate each feed response.
 - View entry counts within 1, 7, and 30 days.
+
+Manual upload of pending EPUBs is also exposed via POST endpoints:
+
+- `POST /upload-pending`
+- `POST /upload-epubs` (alias)
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:5000/upload-epubs
+```
 
 > Note: both apps default to port `5000`, so run them one at a time (or change one app's port).
 
