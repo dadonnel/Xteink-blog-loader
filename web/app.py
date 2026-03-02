@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from flask import Flask, redirect, render_template_string, request, url_for
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from opml_store import OPMLStore, ValidationError
 
 
 app = Flask(__name__)
-store = OPMLStore(Path(__file__).resolve().parent.parent / "feeds.opml")
+store = OPMLStore(PROJECT_ROOT / "feeds.opml")
 
 
 PAGE_TEMPLATE = """
