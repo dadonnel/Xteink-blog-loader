@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import socket
 import subprocess
 import sys
 import time
@@ -101,6 +102,26 @@ def run_shell_command(command: str) -> tuple[bool, str]:
 def ping_host(host: str) -> bool:
     proc = subprocess.run(["ping", "-c", "1", "-W", "1", host], capture_output=True)
     return proc.returncode == 0
+
+
+def tcp_probe_host(host: str, port: int, timeout: float) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def host_reachable(host: str, method: str, tcp_port: int, timeout: float) -> bool:
+    if method == "tcp":
+        return tcp_probe_host(host, tcp_port, timeout)
+    return ping_host(host)
+
+
+def offline_retry_seconds(base_seconds: int, max_seconds: int, consecutive_failures: int) -> int:
+    # Exponential backoff to reduce repeated network probes while the host is still offline.
+    factor = 2 ** min(consecutive_failures, 4)
+    return min(base_seconds * factor, max_seconds)
 
 
 def run_generator(command: str) -> bool:
@@ -211,6 +232,7 @@ def minute_tick_sleep() -> None:
 
 def run_daily_loop(args: argparse.Namespace) -> None:
     state = UploadState(args.state_file)
+    consecutive_unreachable = 0
 
     while True:
         now = now_local()
@@ -231,14 +253,26 @@ def run_daily_loop(args: argparse.Namespace) -> None:
             state.save()
 
         if today_0600 <= now <= today_0730:
-            if ping_host(args.host):
+            if host_reachable(args.host, args.reachability_method, args.tcp_port, args.connect_timeout):
+                consecutive_unreachable = 0
                 print(f"[{epoch_iso()}] Host {args.host} reachable")
                 try_upload_pending(state, args.sync_dir, args.host, args.upload_cmd_template)
                 cleanup_stale_records(state, args.cleanup_days)
                 state.save()
+                minute_tick_sleep()
             else:
-                print(f"[{epoch_iso()}] Host {args.host} unreachable; skipping upload")
-            minute_tick_sleep()
+                consecutive_unreachable += 1
+                sleep_seconds = offline_retry_seconds(
+                    args.offline_retry_base_seconds,
+                    args.offline_retry_max_seconds,
+                    consecutive_unreachable,
+                )
+                print(
+                    f"[{epoch_iso()}] Host {args.host} unreachable; "
+                    f"next check in {sleep_seconds}s"
+                )
+                window_end = now.replace(hour=7, minute=30, second=0, microsecond=0)
+                sleep_until(min(now + dt.timedelta(seconds=sleep_seconds), window_end))
             continue
 
         # outside window and after today's work
@@ -261,6 +295,31 @@ def parse_args() -> argparse.Namespace:
         help='Upload command template. Use {file} and {host} placeholders.',
     )
     parser.add_argument("--cleanup-days", type=int, default=30, help="Keep upload records this many days")
+    parser.add_argument(
+        "--reachability-method",
+        choices=("ping", "tcp"),
+        default="tcp",
+        help="How to check device availability before upload",
+    )
+    parser.add_argument("--tcp-port", type=int, default=22, help="TCP port used by --reachability-method tcp")
+    parser.add_argument(
+        "--connect-timeout",
+        type=float,
+        default=1.0,
+        help="Timeout in seconds for reachability probe",
+    )
+    parser.add_argument(
+        "--offline-retry-base-seconds",
+        type=int,
+        default=30,
+        help="Initial retry interval when host is unreachable",
+    )
+    parser.add_argument(
+        "--offline-retry-max-seconds",
+        type=int,
+        default=300,
+        help="Maximum retry interval when host remains unreachable",
+    )
     return parser.parse_args()
 
 
