@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import threading
 import xml.etree.ElementTree as ET
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +27,7 @@ UPLOAD_CMD_TEMPLATE = os.environ.get(
 UPLOAD_REACHABILITY_METHOD = os.environ.get("MORNING_SYNC_REACHABILITY_METHOD", "tcp")
 UPLOAD_TCP_PORT = int(os.environ.get("MORNING_SYNC_TCP_PORT", "22"))
 UPLOAD_CONNECT_TIMEOUT = float(os.environ.get("MORNING_SYNC_CONNECT_TIMEOUT", "1.0"))
+MANUAL_UPLOAD_LOCK = threading.Lock()
 
 
 def load_sources(path: str = SOURCES_FILE):
@@ -69,38 +71,39 @@ def build_validate_payload():
 
 
 def build_manual_upload_payload():
-    state = UploadState(UPLOAD_STATE_FILE)
-    pending_before = len(ensure_records_for_files(state, list(UPLOAD_SYNC_DIR.glob("*.epub"))))
+    with MANUAL_UPLOAD_LOCK:
+        state = UploadState(UPLOAD_STATE_FILE)
+        pending_before = len(ensure_records_for_files(state, list(UPLOAD_SYNC_DIR.glob("*.epub"))))
 
-    if not host_reachable(
-        UPLOAD_HOST,
-        UPLOAD_REACHABILITY_METHOD,
-        UPLOAD_TCP_PORT,
-        UPLOAD_CONNECT_TIMEOUT,
-    ):
+        if not host_reachable(
+            UPLOAD_HOST,
+            UPLOAD_REACHABILITY_METHOD,
+            UPLOAD_TCP_PORT,
+            UPLOAD_CONNECT_TIMEOUT,
+        ):
+            return {
+                "status": "unreachable",
+                "host": UPLOAD_HOST,
+                "pending_before": pending_before,
+                "pending_after": pending_before,
+                "uploaded_now": 0,
+            }, HTTPStatus.SERVICE_UNAVAILABLE
+
+        try_upload_pending(state, UPLOAD_SYNC_DIR, UPLOAD_HOST, UPLOAD_CMD_TEMPLATE)
+        state.save()
+
+        pending_after = len(
+            [r for r in state.records.values() if not r.get("uploaded_successfully", False)]
+        )
+        uploaded_now = max(0, pending_before - pending_after)
+
         return {
-            "status": "unreachable",
+            "status": "ok",
             "host": UPLOAD_HOST,
             "pending_before": pending_before,
-            "pending_after": pending_before,
-            "uploaded_now": 0,
-        }, HTTPStatus.SERVICE_UNAVAILABLE
-
-    try_upload_pending(state, UPLOAD_SYNC_DIR, UPLOAD_HOST, UPLOAD_CMD_TEMPLATE)
-    state.save()
-
-    pending_after = len(
-        [r for r in state.records.values() if not r.get("uploaded_successfully", False)]
-    )
-    uploaded_now = max(0, pending_before - pending_after)
-
-    return {
-        "status": "ok",
-        "host": UPLOAD_HOST,
-        "pending_before": pending_before,
-        "pending_after": pending_after,
-        "uploaded_now": uploaded_now,
-    }, HTTPStatus.OK
+            "pending_after": pending_after,
+            "uploaded_now": uploaded_now,
+        }, HTTPStatus.OK
 
 
 class Handler(BaseHTTPRequestHandler):
