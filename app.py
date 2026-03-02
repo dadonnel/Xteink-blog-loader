@@ -80,7 +80,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(body, "application/json; charset=utf-8")
 
 
-def run(host: str = "0.0.0.0", port: int = 5000):
+def run(host: str = "0.0.0.0", port: int = 5001):
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Server running on http://{host}:{port}")
     server.serve_forever()
