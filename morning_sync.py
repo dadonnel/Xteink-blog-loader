@@ -115,7 +115,11 @@ def tcp_probe_host(host: str, port: int, timeout: float) -> bool:
 def host_reachable(host: str, method: str, tcp_port: int, timeout: float) -> bool:
     if method == "tcp":
         return tcp_probe_host(host, tcp_port, timeout)
-    return ping_host(host)
+    if method == "ping":
+        return ping_host(host)
+    # auto: prefer a fast TCP check when SSH is available, but fall back to ICMP
+    # so we do not mislabel online devices as unreachable when port 22 is closed.
+    return tcp_probe_host(host, tcp_port, timeout) or ping_host(host)
 
 
 def offline_retry_seconds(base_seconds: int, max_seconds: int, consecutive_failures: int) -> int:
@@ -297,8 +301,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cleanup-days", type=int, default=30, help="Keep upload records this many days")
     parser.add_argument(
         "--reachability-method",
-        choices=("ping", "tcp"),
-        default="tcp",
+        choices=("ping", "tcp", "auto"),
+        default="auto",
         help="How to check device availability before upload",
     )
     parser.add_argument("--tcp-port", type=int, default=22, help="TCP port used by --reachability-method tcp")

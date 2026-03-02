@@ -23,7 +23,7 @@ UPLOAD_STATE_FILE = Path(
 UPLOAD_CMD_TEMPLATE = os.environ.get(
     "MORNING_SYNC_UPLOAD_CMD", 'scp "{file}" "root@{host}:/mnt/onboard/"'
 )
-UPLOAD_REACHABILITY_METHOD = os.environ.get("MORNING_SYNC_REACHABILITY_METHOD", "tcp")
+UPLOAD_REACHABILITY_METHOD = os.environ.get("MORNING_SYNC_REACHABILITY_METHOD", "auto")
 UPLOAD_TCP_PORT = int(os.environ.get("MORNING_SYNC_TCP_PORT", "22"))
 UPLOAD_CONNECT_TIMEOUT = float(os.environ.get("MORNING_SYNC_CONNECT_TIMEOUT", "1.0"))
 
@@ -126,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_bytes(body, "application/json; charset=utf-8")
             return
 
-        if self.path == "/upload-pending":
+        if self.path in {"/upload-pending", "/upload-epubs"}:
             payload, status = build_manual_upload_payload()
             body = json.dumps(payload).encode("utf-8")
             self._send_bytes(body, "application/json; charset=utf-8", status)
