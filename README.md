@@ -129,6 +129,17 @@ Then open `http://127.0.0.1:5000/` and click **Validate feeds** to:
 - Validate each feed response.
 - View entry counts within 1, 7, and 30 days.
 
+Manual upload of pending EPUBs is also exposed via POST endpoints:
+
+- `POST /upload-pending`
+- `POST /upload-epubs` (alias)
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:5000/upload-epubs
+```
+
 > Note: both apps default to port `5000`, so run them one at a time (or change one app's port).
 
 ## Configuration
