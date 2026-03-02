@@ -27,3 +27,11 @@ def test_host_reachable_auto_uses_tcp_when_available(monkeypatch):
     monkeypatch.setattr(morning_sync, "tcp_probe_host", lambda host, port, timeout: host == "h")
     monkeypatch.setattr(morning_sync, "ping_host", lambda host: False)
     assert morning_sync.host_reachable("h", "auto", 22, 1.0)
+
+
+def test_ping_host_returns_false_when_ping_binary_missing(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("ping")
+
+    monkeypatch.setattr(morning_sync.subprocess, "run", fake_run)
+    assert morning_sync.ping_host("h") is False
