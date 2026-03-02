@@ -76,6 +76,9 @@ Environment variable overrides are also supported:
 - `MORNING_SYNC_HOST`
 - `MORNING_SYNC_UPLOAD_CMD`
 - `MORNING_SYNC_GENERATOR_CMD`
+- `MORNING_SYNC_REACHABILITY_METHOD` (`auto`, `ping`, or `tcp`; default `auto`)
+- `MORNING_SYNC_TCP_PORT` (used for `tcp`/`auto`, default `22`)
+- `MORNING_SYNC_CONNECT_TIMEOUT` (seconds, default `1.0`)
 
 ### Run morning sync as a systemd service
 

@@ -23,7 +23,7 @@ UPLOAD_STATE_FILE = Path(
 UPLOAD_CMD_TEMPLATE = os.environ.get(
     "MORNING_SYNC_UPLOAD_CMD", 'scp "{file}" "root@{host}:/mnt/onboard/"'
 )
-UPLOAD_REACHABILITY_METHOD = os.environ.get("MORNING_SYNC_REACHABILITY_METHOD", "tcp")
+UPLOAD_REACHABILITY_METHOD = os.environ.get("MORNING_SYNC_REACHABILITY_METHOD", "auto")
 UPLOAD_TCP_PORT = int(os.environ.get("MORNING_SYNC_TCP_PORT", "22"))
 UPLOAD_CONNECT_TIMEOUT = float(os.environ.get("MORNING_SYNC_CONNECT_TIMEOUT", "1.0"))
 
