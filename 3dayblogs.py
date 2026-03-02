@@ -55,9 +55,14 @@ def main() -> int:
 
     articles: list[dict[str, str]] = []
     for item in urls:
-        article = feed_service.fetch_and_extract(item["url"])
-        if article:
-            articles.append(article)
+        content = feed_service.fetch_and_extract(item["url"])
+        if content:
+            articles.append(
+                {
+                    "title": item.get("title") or item["url"],
+                    "content": content,
+                }
+            )
 
     if not articles:
         print("No article content extracted. Exiting.")
