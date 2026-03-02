@@ -70,7 +70,9 @@ def build_validate_payload():
 
 def build_manual_upload_payload():
     state = UploadState(UPLOAD_STATE_FILE)
-    pending_before = len(ensure_records_for_files(state, list(UPLOAD_SYNC_DIR.glob("*.epub"))))
+    pending_items = ensure_records_for_files(state, list(UPLOAD_SYNC_DIR.glob("*.epub")))
+    pending_before = len(pending_items)
+    pending_keys = [key for key, _ in pending_items]
 
     if not host_reachable(
         UPLOAD_HOST,
@@ -84,6 +86,8 @@ def build_manual_upload_payload():
             "pending_before": pending_before,
             "pending_after": pending_before,
             "uploaded_now": 0,
+            "failed_now": 0,
+            "failed_items": [],
         }, HTTPStatus.SERVICE_UNAVAILABLE
 
     try_upload_pending(state, UPLOAD_SYNC_DIR, UPLOAD_HOST, UPLOAD_CMD_TEMPLATE)
@@ -92,14 +96,28 @@ def build_manual_upload_payload():
     pending_after = len(
         [r for r in state.records.values() if not r.get("uploaded_successfully", False)]
     )
-    uploaded_now = max(0, pending_before - pending_after)
+    uploaded_now = sum(
+        1 for key in pending_keys if state.records.get(key, {}).get("uploaded_successfully", False)
+    )
+    failed_items = []
+    for key in pending_keys:
+        rec = state.records.get(key, {})
+        if not rec.get("uploaded_successfully", False):
+            failed_items.append(
+                {
+                    "filepath": rec.get("filepath"),
+                    "error": rec.get("error") or "unknown upload failure",
+                }
+            )
 
     return {
-        "status": "ok",
+        "status": "ok" if not failed_items else "partial",
         "host": UPLOAD_HOST,
         "pending_before": pending_before,
         "pending_after": pending_after,
         "uploaded_now": uploaded_now,
+        "failed_now": len(failed_items),
+        "failed_items": failed_items,
     }, HTTPStatus.OK
 
 

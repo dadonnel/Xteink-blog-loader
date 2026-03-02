@@ -76,7 +76,10 @@
       try {
         const response = await fetch('/upload-pending', { method: 'POST' });
         const result = await response.json();
-        if (response.ok) {
+        if (response.ok && result.status === 'partial') {
+          const firstError = result.failed_items?.[0]?.error || 'unknown upload failure';
+          message.textContent = `Upload attempted: ${result.uploaded_now} uploaded, ${result.failed_now} failed, ${result.pending_after} still pending. First error: ${firstError}`;
+        } else if (response.ok) {
           message.textContent = `Upload complete: ${result.uploaded_now} file(s) uploaded, ${result.pending_after} still pending.`;
         } else {
           message.textContent = `Upload skipped: device ${result.host} unreachable (${result.pending_before} pending).`;
