@@ -126,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_bytes(body, "application/json; charset=utf-8")
             return
 
-        if self.path == "/upload-pending":
+        if self.path in {"/upload-pending", "/upload-epubs"}:
             payload, status = build_manual_upload_payload()
             body = json.dumps(payload).encode("utf-8")
             self._send_bytes(body, "application/json; charset=utf-8", status)
