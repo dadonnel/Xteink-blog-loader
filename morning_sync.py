@@ -100,7 +100,10 @@ def run_shell_command(command: str) -> tuple[bool, str]:
 
 
 def ping_host(host: str) -> bool:
-    proc = subprocess.run(["ping", "-c", "1", "-W", "1", host], capture_output=True)
+    try:
+        proc = subprocess.run(["ping", "-c", "1", "-W", "1", host], capture_output=True)
+    except FileNotFoundError:
+        return False
     return proc.returncode == 0
 
 
