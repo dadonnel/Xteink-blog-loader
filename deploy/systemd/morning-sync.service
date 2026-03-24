@@ -11,8 +11,9 @@ Restart=always
 RestartSec=10
 
 # Optional overrides (uncomment and edit):
-# Environment="MORNING_SYNC_HOST=192.168.1.211"
-# Environment="MORNING_SYNC_UPLOAD_CMD=scp {file} root@{host}:/mnt/onboard/"
+# Environment="MORNING_SYNC_HOST=192.168.0.10"
+# Environment="MORNING_SYNC_UPLOAD_PATH=/upload"
+# Environment="MORNING_SYNC_UPLOAD_FIELD_NAME=file"
 
 [Install]
 WantedBy=multi-user.target

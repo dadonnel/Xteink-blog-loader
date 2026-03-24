@@ -65,19 +65,22 @@ Useful options:
 
 ```bash
 python3 morning_sync.py \
-  --host 192.168.1.211 \
+  --host 192.168.0.10 \
   --sync-dir storage/downloads/rss_epub/output_epubs/xteink_sync \
   --state-file storage/downloads/rss_epub/upload_state.json \
-  --generator-cmd "python3 3dayblogs.py"
+  --generator-cmd "python3 3dayblogs.py" \
+  --upload-path /upload \
+  --upload-field-name file
 ```
 
 Environment variable overrides are also supported:
 
 - `MORNING_SYNC_HOST`
-- `MORNING_SYNC_UPLOAD_CMD`
+- `MORNING_SYNC_UPLOAD_PATH`
+- `MORNING_SYNC_UPLOAD_FIELD_NAME`
 - `MORNING_SYNC_GENERATOR_CMD`
 - `MORNING_SYNC_REACHABILITY_METHOD` (`auto`, `ping`, or `tcp`; default `auto`)
-- `MORNING_SYNC_TCP_PORT` (used for `tcp`/`auto`, default `22`)
+- `MORNING_SYNC_TCP_PORT` (used for `tcp`/`auto`, default `80`)
 - `MORNING_SYNC_CONNECT_TIMEOUT` (seconds, default `1.0`)
 
 ### Run morning sync as a systemd service

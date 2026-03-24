@@ -18,18 +18,17 @@ BASE_DIR = Path(__file__).parent
 SOURCES_FILE = os.environ.get("SOURCES_FILE", str(BASE_DIR / "feeds.opml"))
 VALIDATION_TIMEOUT_SECONDS = int(os.environ.get("VALIDATION_TIMEOUT_SECONDS", "10"))
 VALIDATION_MAX_WORKERS = int(os.environ.get("VALIDATION_MAX_WORKERS", "10"))
-UPLOAD_HOST = os.environ.get("MORNING_SYNC_HOST", "192.168.1.211")
+UPLOAD_HOST = os.environ.get("MORNING_SYNC_HOST", "192.168.0.10")
 UPLOAD_SYNC_DIR = Path(
     os.environ.get("MORNING_SYNC_SYNC_DIR", "storage/downloads/rss_epub/output_epubs/xteink_sync")
 )
 UPLOAD_STATE_FILE = Path(
     os.environ.get("MORNING_SYNC_STATE_FILE", "storage/downloads/rss_epub/upload_state.json")
 )
-UPLOAD_CMD_TEMPLATE = os.environ.get(
-    "MORNING_SYNC_UPLOAD_CMD", 'scp "{file}" "root@{host}:/mnt/onboard/"'
-)
+UPLOAD_PATH = os.environ.get("MORNING_SYNC_UPLOAD_PATH", "/upload")
+UPLOAD_FIELD_NAME = os.environ.get("MORNING_SYNC_UPLOAD_FIELD_NAME", "file")
 UPLOAD_REACHABILITY_METHOD = os.environ.get("MORNING_SYNC_REACHABILITY_METHOD", "auto")
-UPLOAD_TCP_PORT = int(os.environ.get("MORNING_SYNC_TCP_PORT", "22"))
+UPLOAD_TCP_PORT = int(os.environ.get("MORNING_SYNC_TCP_PORT", "80"))
 UPLOAD_CONNECT_TIMEOUT = float(os.environ.get("MORNING_SYNC_CONNECT_TIMEOUT", "1.0"))
 GENERATE_SCRIPT = Path(os.environ.get("GENERATE_EPUB_SCRIPT", str(BASE_DIR / "3dayblogs.py")))
 GENERATE_TIMEOUT_SECONDS = int(os.environ.get("GENERATE_EPUB_TIMEOUT_SECONDS", "900"))
@@ -99,7 +98,7 @@ def build_manual_upload_payload():
             "failed_items": [],
         }, HTTPStatus.SERVICE_UNAVAILABLE
 
-    try_upload_pending(state, UPLOAD_SYNC_DIR, UPLOAD_HOST, UPLOAD_CMD_TEMPLATE)
+    try_upload_pending(state, UPLOAD_SYNC_DIR, UPLOAD_HOST, UPLOAD_PATH, UPLOAD_FIELD_NAME)
     state.save()
 
     pending_after = len(

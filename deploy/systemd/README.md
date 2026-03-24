@@ -21,7 +21,8 @@ journalctl -u morning-sync.service -f
 Optional environment overrides (set in service file under `[Service]`):
 
 - `MORNING_SYNC_HOST`
-- `MORNING_SYNC_UPLOAD_CMD`
+- `MORNING_SYNC_UPLOAD_PATH`
+- `MORNING_SYNC_UPLOAD_FIELD_NAME`
 - `MORNING_SYNC_GENERATOR_CMD`
 
 ## cron fallback
