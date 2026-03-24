@@ -1,6 +1,7 @@
 import json
 import urllib.parse
 import xml.etree.ElementTree as ET
+from http import HTTPStatus
 
 import app
 
@@ -93,3 +94,18 @@ def test_do_post_feeds_handles_malformed_sources_file(monkeypatch):
     query = urllib.parse.parse_qs(parsed.query)
     assert parsed.fragment == "feeds"
     assert query["error"] == ["malformed opml"]
+
+
+def test_build_generate_epub_payload_uses_script_output_for_reason(monkeypatch):
+    class FakeResult:
+        returncode = 1
+        stdout = "trace line 1\ntrace line 2"
+        stderr = "fatal error"
+
+    monkeypatch.setattr(app.subprocess, "run", lambda *args, **kwargs: FakeResult())
+
+    payload, status = app.build_generate_epub_payload(3)
+
+    assert status == HTTPStatus.INTERNAL_SERVER_ERROR
+    assert payload["status"] == "error"
+    assert payload["reason"] == "fatal error"

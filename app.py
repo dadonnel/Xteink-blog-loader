@@ -166,10 +166,13 @@ def build_generate_epub_payload(days_back: int):
     ).strip()
 
     if result.returncode != 0:
+        reason = "EPUB generation failed"
+        if output:
+            reason = output.splitlines()[-1][:240]
         return {
             "status": "error",
             "days_back": days_back,
-            "reason": "EPUB generation failed",
+            "reason": reason,
             "returncode": result.returncode,
             "output": output,
         }, HTTPStatus.INTERNAL_SERVER_ERROR
