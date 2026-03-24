@@ -29,7 +29,13 @@ def test_build_manual_upload_payload_uploads_when_reachable(monkeypatch, tmp_pat
     monkeypatch.setattr(app, "UPLOAD_STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(app, "host_reachable", lambda *args: True)
 
-    def fake_try_upload_pending(state, sync_dir: Path, host: str, cmd_template: str):
+    def fake_try_upload_pending(
+        state,
+        sync_dir: Path,
+        host: str,
+        upload_path: str,
+        field_name: str,
+    ):
         for record in state.records.values():
             record["uploaded_successfully"] = True
 
@@ -54,7 +60,13 @@ def test_build_manual_upload_payload_reports_partial_when_upload_fails(monkeypat
     monkeypatch.setattr(app, "UPLOAD_STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(app, "host_reachable", lambda *args: True)
 
-    def fake_try_upload_pending(state, sync_dir: Path, host: str, cmd_template: str):
+    def fake_try_upload_pending(
+        state,
+        sync_dir: Path,
+        host: str,
+        upload_path: str,
+        field_name: str,
+    ):
         for record in state.records.values():
             record["uploaded_successfully"] = False
             record["error"] = "permission denied"

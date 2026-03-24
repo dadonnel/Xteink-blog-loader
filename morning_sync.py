@@ -4,7 +4,7 @@
 Behavior:
 1. Runs the generation pipeline once at 06:00 local time.
 2. From 06:00 to 07:30 local time, checks every minute:
-   - ping 192.168.1.211
+   - probe 192.168.0.10
    - if reachable, uploads pending EPUB files.
 3. Persists upload state to a durable JSON file.
 """
@@ -17,20 +17,18 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shlex
 import socket
 import subprocess
 import sys
 import time
 from typing import Any
 
-DEFAULT_HOST = os.getenv("MORNING_SYNC_HOST", "192.168.1.211")
+DEFAULT_HOST = os.getenv("MORNING_SYNC_HOST", "192.168.0.10")
 DEFAULT_SYNC_DIR = Path("storage/downloads/rss_epub/output_epubs/xteink_sync")
 DEFAULT_STATE_FILE = Path("storage/downloads/rss_epub/upload_state.json")
 DEFAULT_GENERATOR_CMD = os.getenv("MORNING_SYNC_GENERATOR_CMD", "python3 3dayblogs.py")
-DEFAULT_UPLOAD_CMD_TEMPLATE = os.getenv(
-    "MORNING_SYNC_UPLOAD_CMD", 'scp "{file}" "root@{host}:/mnt/onboard/"'
-)
+DEFAULT_UPLOAD_PATH = os.getenv("MORNING_SYNC_UPLOAD_PATH", "/upload")
+DEFAULT_UPLOAD_FIELD_NAME = os.getenv("MORNING_SYNC_UPLOAD_FIELD_NAME", "file")
 
 
 class UploadState:
@@ -120,8 +118,7 @@ def host_reachable(host: str, method: str, tcp_port: int, timeout: float) -> boo
         return tcp_probe_host(host, tcp_port, timeout)
     if method == "ping":
         return ping_host(host)
-    # auto: prefer a fast TCP check when SSH is available, but fall back to ICMP
-    # so we do not mislabel online devices as unreachable when port 22 is closed.
+    # auto: prefer a fast TCP check on the upload port, but fall back to ICMP.
     return tcp_probe_host(host, tcp_port, timeout) or ping_host(host)
 
 
@@ -149,9 +146,24 @@ def list_epubs(sync_dir: Path) -> list[Path]:
     return sorted(p for p in sync_dir.glob("*.epub") if p.is_file())
 
 
-def upload_file(path: Path, host: str, cmd_template: str) -> tuple[bool, str]:
-    cmd = cmd_template.format(file=shlex.quote(str(path.resolve())), host=host)
-    return run_shell_command(cmd)
+def upload_file(path: Path, host: str, upload_path: str, field_name: str) -> tuple[bool, str]:
+    import requests
+
+    if not upload_path.startswith("/"):
+        upload_path = f"/{upload_path}"
+    url = f"http://{host}{upload_path}"
+    try:
+        with path.open("rb") as handle:
+            response = requests.post(
+                url,
+                files={field_name: (path.name, handle)},
+                timeout=20,
+            )
+        if response.status_code >= 400:
+            return False, f"HTTP {response.status_code}: {response.text[:240].strip()}"
+        return True, response.text.strip()
+    except requests.RequestException as exc:
+        return False, str(exc)
 
 
 def ensure_records_for_files(state: UploadState, epub_files: list[Path]) -> list[tuple[str, Path]]:
@@ -175,7 +187,13 @@ def ensure_records_for_files(state: UploadState, epub_files: list[Path]) -> list
     return pending
 
 
-def try_upload_pending(state: UploadState, sync_dir: Path, host: str, cmd_template: str) -> None:
+def try_upload_pending(
+    state: UploadState,
+    sync_dir: Path,
+    host: str,
+    upload_path: str,
+    field_name: str,
+) -> None:
     epub_files = list_epubs(sync_dir)
     if not epub_files:
         print(f"[{epoch_iso()}] No EPUB files found in {sync_dir}")
@@ -192,7 +210,7 @@ def try_upload_pending(state: UploadState, sync_dir: Path, host: str, cmd_templa
         rec["last_attempt_at"] = epoch_iso()
         rec["attempt_count"] = int(rec.get("attempt_count", 0)) + 1
 
-        ok, out = upload_file(path, host, cmd_template)
+        ok, out = upload_file(path, host, upload_path, field_name)
         if ok:
             rec["uploaded_successfully"] = True
             rec["uploaded_at"] = epoch_iso()
@@ -263,7 +281,13 @@ def run_daily_loop(args: argparse.Namespace) -> None:
             if host_reachable(args.host, args.reachability_method, args.tcp_port, args.connect_timeout):
                 consecutive_unreachable = 0
                 print(f"[{epoch_iso()}] Host {args.host} reachable")
-                try_upload_pending(state, args.sync_dir, args.host, args.upload_cmd_template)
+                try_upload_pending(
+                    state,
+                    args.sync_dir,
+                    args.host,
+                    args.upload_path,
+                    args.upload_field_name,
+                )
                 cleanup_stale_records(state, args.cleanup_days)
                 state.save()
                 minute_tick_sleep()
@@ -297,9 +321,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE_FILE, help="Durable JSON state file")
     parser.add_argument("--generator-cmd", default=DEFAULT_GENERATOR_CMD, help="Command used to run generation pipeline")
     parser.add_argument(
-        "--upload-cmd-template",
-        default=DEFAULT_UPLOAD_CMD_TEMPLATE,
-        help='Upload command template. Use {file} and {host} placeholders.',
+        "--upload-path",
+        default=DEFAULT_UPLOAD_PATH,
+        help="HTTP upload endpoint path on the device",
+    )
+    parser.add_argument(
+        "--upload-field-name",
+        default=DEFAULT_UPLOAD_FIELD_NAME,
+        help="Multipart form field name expected by device upload endpoint",
     )
     parser.add_argument("--cleanup-days", type=int, default=30, help="Keep upload records this many days")
     parser.add_argument(
@@ -308,7 +337,7 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="How to check device availability before upload",
     )
-    parser.add_argument("--tcp-port", type=int, default=22, help="TCP port used by --reachability-method tcp")
+    parser.add_argument("--tcp-port", type=int, default=80, help="TCP port used by --reachability-method tcp")
     parser.add_argument(
         "--connect-timeout",
         type=float,
