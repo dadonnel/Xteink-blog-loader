@@ -185,6 +185,8 @@ def build_generate_epub_payload(days_back: int):
 def _render_feed_groups() -> str:
     try:
         feeds = store.parse_feeds()
+    except FileNotFoundError:
+        return "<p>No feeds configured yet.</p>"
     except ET.ParseError:
         return "<p class='error'>Unable to parse feeds.opml.</p>"
 

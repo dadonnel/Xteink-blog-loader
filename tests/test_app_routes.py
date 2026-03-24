@@ -27,3 +27,13 @@ def test_do_post_upload_epubs_alias(monkeypatch):
     assert captured["status"] == 200
     assert captured["content_type"].startswith("application/json")
     assert captured["payload"]["status"] == "ok"
+
+
+def test_render_feed_groups_handles_missing_sources_file(monkeypatch):
+    monkeypatch.setattr(
+        app.store,
+        "parse_feeds",
+        lambda: (_ for _ in ()).throw(FileNotFoundError("missing opml")),
+    )
+
+    assert app._render_feed_groups() == "<p>No feeds configured yet.</p>"
