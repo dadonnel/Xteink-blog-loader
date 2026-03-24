@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+import importlib.util
 from pathlib import Path
 
 # Ensure local package imports work when running from repo root.
@@ -13,10 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from rss_epub.config import OUTPUT_DIR as DEFAULT_OUTPUT_DIR
 from rss_epub.config import SOURCES_FILE as DEFAULT_SOURCES_FILE
 from rss_epub.config import DAYS_BACK as DEFAULT_DAYS_BACK
-from rss_epub.epub_service import EpubService
-from rss_epub.feed_service import FeedService
-from rss_epub.opml_store import OpmlStore
-from rss_epub.xteink_client import XteinkClient
 
 
 def _resolve_sources_file() -> Path:
@@ -33,6 +30,16 @@ def _resolve_sources_file() -> Path:
 
 def main() -> int:
     print("--- GenAI Weekly Generator ---")
+
+    if importlib.util.find_spec("ebooklib") is None:
+        print("Missing dependency: ebooklib")
+        print("Install with: pip install ebooklib")
+        return 1
+
+    from rss_epub.epub_service import EpubService
+    from rss_epub.feed_service import FeedService
+    from rss_epub.opml_store import OpmlStore
+    from rss_epub.xteink_client import XteinkClient
 
     output_dir = Path(os.getenv("OUTPUT_DIR", str(DEFAULT_OUTPUT_DIR)))
     days_back = int(os.getenv("DAYS_BACK", str(DEFAULT_DAYS_BACK)))
