@@ -58,10 +58,18 @@ class OPMLStore:
                 )
         return grouped
 
-    def append_feed(self, *, name: str, url: str, category: str | None = None) -> None:
+    def append_feed(
+        self,
+        *,
+        name: str,
+        url: str,
+        category: str | None = None,
+        feed_type: str = "rss",
+    ) -> None:
         name = name.strip()
         url = url.strip()
         category = (category or "Uncategorized").strip() or "Uncategorized"
+        feed_type = (feed_type or "rss").strip().lower() or "rss"
 
         if not name or not url:
             raise ValidationError("Name and URL are required.")
@@ -82,7 +90,7 @@ class OPMLStore:
             category_node,
             "outline",
             {
-                "type": "rss",
+                "type": feed_type,
                 "text": name,
                 "title": name,
                 "xmlUrl": url,

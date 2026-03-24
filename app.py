@@ -10,6 +10,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from feed_discovery import FeedDiscoveryError, resolve_feed
 from feed_service import validate_feeds
 from morning_sync import UploadState, ensure_records_for_files, host_reachable, try_upload_pending
 from opml_store import OPMLStore, ValidationError
@@ -293,9 +294,9 @@ def render_index_html(message: str = "", error: str = "", form_data: dict | None
     <h2>Feed Manager</h2>
     <h3>Add Feed</h3>
     <form method="post" action="/feeds">
-      <input name="name" placeholder="Feed Name" value="{html.escape(form_data.get('name', ''))}" required />
-      <input name="url" placeholder="https://example.com/feed.xml" value="{html.escape(form_data.get('url', ''))}" required />
-      <input name="category" placeholder="Category (optional)" value="{html.escape(form_data.get('category', ''))}" />
+      <input name="name" placeholder="Feed Name (optional)" value="{html.escape(form_data.get('name', ''))}" />
+      <input name="url" placeholder="https://example.com/post/slug" value="{html.escape(form_data.get('url', ''))}" required />
+      <input name="category" placeholder="Category (optional override)" value="{html.escape(form_data.get('category', ''))}" />
       <button type="submit">Add Feed</button>
     </form>
 
@@ -426,10 +427,10 @@ class Handler(BaseHTTPRequestHandler):
             url = form.get("url", "")
             category = form.get("category", "")
 
-            if not name.strip() or not url.strip():
+            if not url.strip():
                 query = urllib.parse.urlencode(
                     {
-                        "error": "Name and URL are required.",
+                        "error": "URL is required.",
                         "name": name,
                         "url": url,
                         "category": category,
@@ -438,9 +439,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._redirect(f"/?{query}#feeds")
                 return
 
+            existing_categories: list[str] = []
             try:
-                store.append_feed(name=name, url=url, category=category)
-            except (ValidationError, FileNotFoundError, ET.ParseError) as exc:
+                existing_categories = list(store.parse_feeds().keys())
+            except (FileNotFoundError, ET.ParseError):
+                existing_categories = []
+
+            try:
+                resolved = resolve_feed(url, existing_categories)
+                final_name = name.strip() or resolved.name
+                final_category = category.strip() or resolved.category
+                store.append_feed(
+                    name=final_name,
+                    url=resolved.feed_url,
+                    category=final_category,
+                    feed_type=resolved.feed_type,
+                )
+            except (FeedDiscoveryError, ValidationError, FileNotFoundError, ET.ParseError) as exc:
                 query = urllib.parse.urlencode(
                     {
                         "error": str(exc),
@@ -452,7 +467,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._redirect(f"/?{query}#feeds")
                 return
 
-            query = urllib.parse.urlencode({"message": "Feed added successfully."})
+            query = urllib.parse.urlencode(
+                {
+                    "message": f"Feed added: {final_name} ({final_category}).",
+                }
+            )
             self._redirect(f"/?{query}#feeds")
             return
 
