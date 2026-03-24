@@ -1,4 +1,6 @@
 import json
+import urllib.parse
+import xml.etree.ElementTree as ET
 
 import app
 
@@ -37,3 +39,57 @@ def test_render_feed_groups_handles_missing_sources_file(monkeypatch):
     )
 
     assert app._render_feed_groups() == "<p>No feeds configured yet.</p>"
+
+
+def test_do_post_feeds_handles_missing_sources_file(monkeypatch):
+    handler = app.Handler.__new__(app.Handler)
+    handler.path = "/feeds"
+    handler._read_form_data = lambda: {
+        "name": "Example",
+        "url": "https://example.com/feed.xml",
+        "category": "Tech",
+    }
+
+    monkeypatch.setattr(
+        app.store,
+        "append_feed",
+        lambda **_: (_ for _ in ()).throw(FileNotFoundError("missing opml")),
+    )
+
+    redirects = []
+    handler._redirect = lambda location: redirects.append(location)
+
+    app.Handler.do_POST(handler)
+
+    assert len(redirects) == 1
+    parsed = urllib.parse.urlparse(redirects[0])
+    query = urllib.parse.parse_qs(parsed.query)
+    assert parsed.fragment == "feeds"
+    assert query["error"] == ["missing opml"]
+
+
+def test_do_post_feeds_handles_malformed_sources_file(monkeypatch):
+    handler = app.Handler.__new__(app.Handler)
+    handler.path = "/feeds"
+    handler._read_form_data = lambda: {
+        "name": "Example",
+        "url": "https://example.com/feed.xml",
+        "category": "Tech",
+    }
+
+    monkeypatch.setattr(
+        app.store,
+        "append_feed",
+        lambda **_: (_ for _ in ()).throw(ET.ParseError("malformed opml")),
+    )
+
+    redirects = []
+    handler._redirect = lambda location: redirects.append(location)
+
+    app.Handler.do_POST(handler)
+
+    assert len(redirects) == 1
+    parsed = urllib.parse.urlparse(redirects[0])
+    query = urllib.parse.parse_qs(parsed.query)
+    assert parsed.fragment == "feeds"
+    assert query["error"] == ["malformed opml"]

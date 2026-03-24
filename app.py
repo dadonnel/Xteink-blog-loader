@@ -438,7 +438,7 @@ class Handler(BaseHTTPRequestHandler):
 
             try:
                 store.append_feed(name=name, url=url, category=category)
-            except ValidationError as exc:
+            except (ValidationError, FileNotFoundError, ET.ParseError) as exc:
                 query = urllib.parse.urlencode(
                     {
                         "error": str(exc),
