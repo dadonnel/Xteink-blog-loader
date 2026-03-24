@@ -18,7 +18,7 @@ BASE_DIR = Path(__file__).parent
 SOURCES_FILE = os.environ.get("SOURCES_FILE", str(BASE_DIR / "feeds.opml"))
 VALIDATION_TIMEOUT_SECONDS = int(os.environ.get("VALIDATION_TIMEOUT_SECONDS", "10"))
 VALIDATION_MAX_WORKERS = int(os.environ.get("VALIDATION_MAX_WORKERS", "10"))
-UPLOAD_HOST = os.environ.get("MORNING_SYNC_HOST", "192.168.0.10")
+UPLOAD_HOST = os.environ.get("MORNING_SYNC_HOST", "192.168.1.211")
 UPLOAD_SYNC_DIR = Path(
     os.environ.get("MORNING_SYNC_SYNC_DIR", "storage/downloads/rss_epub/output_epubs/xteink_sync")
 )

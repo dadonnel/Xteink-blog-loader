@@ -65,7 +65,7 @@ Useful options:
 
 ```bash
 python3 morning_sync.py \
-  --host 192.168.0.10 \
+  --host 192.168.1.211 \
   --sync-dir storage/downloads/rss_epub/output_epubs/xteink_sync \
   --state-file storage/downloads/rss_epub/upload_state.json \
   --generator-cmd "python3 3dayblogs.py" \
