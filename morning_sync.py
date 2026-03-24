@@ -4,7 +4,7 @@
 Behavior:
 1. Runs the generation pipeline once at 06:00 local time.
 2. From 06:00 to 07:30 local time, checks every minute:
-   - probe 192.168.0.10
+   - probe 192.168.1.211
    - if reachable, uploads pending EPUB files.
 3. Persists upload state to a durable JSON file.
 """
@@ -23,7 +23,7 @@ import sys
 import time
 from typing import Any
 
-DEFAULT_HOST = os.getenv("MORNING_SYNC_HOST", "192.168.0.10")
+DEFAULT_HOST = os.getenv("MORNING_SYNC_HOST", "192.168.1.211")
 DEFAULT_SYNC_DIR = Path("storage/downloads/rss_epub/output_epubs/xteink_sync")
 DEFAULT_STATE_FILE = Path("storage/downloads/rss_epub/upload_state.json")
 DEFAULT_GENERATOR_CMD = os.getenv("MORNING_SYNC_GENERATOR_CMD", "python3 3dayblogs.py")
