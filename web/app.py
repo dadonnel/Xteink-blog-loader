@@ -14,4 +14,4 @@ from app import run
 
 
 if __name__ == "__main__":
-    run(port=5002)
+    run(host="127.0.0.1", port=5002)
