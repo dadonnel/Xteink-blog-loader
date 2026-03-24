@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 from http import HTTPStatus
 
 import app
+from feed_discovery import FeedResolution
 
 
 def test_do_post_upload_epubs_alias(monkeypatch):
@@ -47,10 +48,20 @@ def test_do_post_feeds_handles_missing_sources_file(monkeypatch):
     handler.path = "/feeds"
     handler._read_form_data = lambda: {
         "name": "Example",
-        "url": "https://example.com/feed.xml",
+        "url": "https://example.com/post/one",
         "category": "Tech",
     }
 
+    monkeypatch.setattr(
+        app,
+        "resolve_feed",
+        lambda *args, **kwargs: FeedResolution(
+            name="Example",
+            feed_url="https://example.com/feed.xml",
+            category="Tech",
+            feed_type="rss",
+        ),
+    )
     monkeypatch.setattr(
         app.store,
         "append_feed",
@@ -74,10 +85,20 @@ def test_do_post_feeds_handles_malformed_sources_file(monkeypatch):
     handler.path = "/feeds"
     handler._read_form_data = lambda: {
         "name": "Example",
-        "url": "https://example.com/feed.xml",
+        "url": "https://example.com/post/one",
         "category": "Tech",
     }
 
+    monkeypatch.setattr(
+        app,
+        "resolve_feed",
+        lambda *args, **kwargs: FeedResolution(
+            name="Example",
+            feed_url="https://example.com/feed.xml",
+            category="Tech",
+            feed_type="rss",
+        ),
+    )
     monkeypatch.setattr(
         app.store,
         "append_feed",
@@ -94,6 +115,55 @@ def test_do_post_feeds_handles_malformed_sources_file(monkeypatch):
     query = urllib.parse.parse_qs(parsed.query)
     assert parsed.fragment == "feeds"
     assert query["error"] == ["malformed opml"]
+
+
+def test_do_post_feeds_autodiscovers_and_defaults_name_category(monkeypatch):
+    handler = app.Handler.__new__(app.Handler)
+    handler.path = "/feeds"
+    handler._read_form_data = lambda: {
+        "name": "",
+        "url": "https://example.com/posts/one",
+        "category": "",
+    }
+
+    monkeypatch.setattr(
+        app.store,
+        "parse_feeds",
+        lambda: {"Engineering & Code": []},
+    )
+
+    monkeypatch.setattr(
+        app,
+        "resolve_feed",
+        lambda *args, **kwargs: FeedResolution(
+            name="Example Engineering",
+            feed_url="https://example.com/feed.xml",
+            category="Engineering & Code",
+            feed_type="atom",
+        ),
+    )
+
+    captured = {}
+
+    def fake_append_feed(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(app.store, "append_feed", fake_append_feed)
+
+    redirects = []
+    handler._redirect = lambda location: redirects.append(location)
+
+    app.Handler.do_POST(handler)
+
+    assert captured == {
+        "name": "Example Engineering",
+        "url": "https://example.com/feed.xml",
+        "category": "Engineering & Code",
+        "feed_type": "atom",
+    }
+    parsed = urllib.parse.urlparse(redirects[0])
+    query = urllib.parse.parse_qs(parsed.query)
+    assert query["message"] == ["Feed added: Example Engineering (Engineering & Code)."]
 
 
 def test_build_generate_epub_payload_uses_script_output_for_reason(monkeypatch):
