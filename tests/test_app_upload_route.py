@@ -83,3 +83,37 @@ def test_build_manual_upload_payload_reports_partial_when_upload_fails(monkeypat
     assert payload["failed_now"] == 1
     assert payload["failed_items"][0]["filepath"].endswith("one.epub")
     assert payload["failed_items"][0]["error"] == "permission denied"
+
+
+def test_build_upload_latest_epub_payload_returns_not_found_when_no_epubs(monkeypatch, tmp_path):
+    sync_dir = tmp_path / "sync"
+    sync_dir.mkdir()
+    monkeypatch.setattr(app, "UPLOAD_SYNC_DIR", sync_dir)
+    monkeypatch.setattr(app, "UPLOAD_STATE_FILE", tmp_path / "state.json")
+
+    payload, status = app.build_upload_latest_epub_payload()
+
+    assert status == 404
+    assert payload["status"] == "error"
+
+
+def test_build_upload_latest_epub_payload_uploads_latest(monkeypatch, tmp_path):
+    sync_dir = tmp_path / "sync"
+    sync_dir.mkdir()
+    older = sync_dir / "older.epub"
+    older.write_text("epub", encoding="utf-8")
+    latest = sync_dir / "latest.epub"
+    latest.write_text("epub", encoding="utf-8")
+    older.touch()
+    latest.touch()
+
+    monkeypatch.setattr(app, "UPLOAD_SYNC_DIR", sync_dir)
+    monkeypatch.setattr(app, "UPLOAD_STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(app, "host_reachable", lambda *args: True)
+    monkeypatch.setattr(app, "upload_file", lambda path, *args: (True, f"uploaded {path.name}"))
+
+    payload, status = app.build_upload_latest_epub_payload()
+
+    assert status == 200
+    assert payload["status"] == "ok"
+    assert payload["filename"] == "latest.epub"
