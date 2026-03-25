@@ -448,7 +448,7 @@ def render_index_html(
       if (validateButton) validateButton.disabled = disabled;
       if (uploadButton) uploadButton.disabled = disabled;
       if (sendLatestButton) sendLatestButton.disabled = disabled;
-      const submitBtn = generateForm?.querySelector('button[type="submit"]');
+      const submitBtn = generateForm ? generateForm.querySelector('button[type="submit"]') : null;
       if (submitBtn) submitBtn.disabled = disabled;
     }}
 
@@ -463,7 +463,7 @@ def render_index_html(
           const result = payload.result || {{}};
           if (Array.isArray(result)) renderRows(result);
           if (payload.status === 'succeeded') {{
-            onSuccess?.(result);
+            if (onSuccess) onSuccess(result);
           }} else {{
             const reason = result.reason || result.output || 'Unknown error';
             message.textContent = `Failed: ${{reason}}`;
@@ -476,74 +476,83 @@ def render_index_html(
       }}
     }}
 
-    validateButton?.addEventListener('click', async () => {{
-      message.textContent = 'Validating feeds...';
-      try {{
-        const response = await fetch('/api/validate', {{ method: 'POST' }});
-        const result = await response.json();
-        await pollJob(result.job_id, (payload) => {{
-          message.textContent = `Validated ${{payload.length || 0}} feed(s).`;
-        }});
-      }} catch (error) {{
-        message.textContent = `Validation failed: ${{error.message}}`;
-      }}
-    }});
+    if (validateButton) {{
+      validateButton.addEventListener('click', async () => {{
+        message.textContent = 'Validating feeds...';
+        try {{
+          const response = await fetch('/api/validate', {{ method: 'POST' }});
+          const result = await response.json();
+          await pollJob(result.job_id, (payload) => {{
+            message.textContent = `Validated ${{payload.length || 0}} feed(s).`;
+          }});
+        }} catch (error) {{
+          message.textContent = `Validation failed: ${{error.message}}`;
+        }}
+      }});
+    }}
 
-    uploadButton?.addEventListener('click', async () => {{
-      message.textContent = 'Uploading pending EPUBs...';
-      try {{
-        const response = await fetch('/api/upload-pending', {{ method: 'POST' }});
-        const result = await response.json();
-        await pollJob(result.job_id, (payload) => {{
-          if (payload.status === 'partial') {{
-            const firstError = payload.failed_items?.[0]?.error || 'unknown upload failure';
-            message.textContent = `Upload attempted: ${{payload.uploaded_now}} uploaded, ${{payload.failed_now}} failed, ${{payload.pending_after}} pending. First error: ${{firstError}}`;
-          }} else {{
-            message.textContent = `Upload complete: ${{payload.uploaded_now || 0}} uploaded.`;
-          }}
-        }});
-      }} catch (error) {{
-        message.textContent = `Upload failed: ${{error.message}}`;
-      }}
-    }});
+    if (uploadButton) {{
+      uploadButton.addEventListener('click', async () => {{
+        message.textContent = 'Uploading pending EPUBs...';
+        try {{
+          const response = await fetch('/api/upload-pending', {{ method: 'POST' }});
+          const result = await response.json();
+          await pollJob(result.job_id, (payload) => {{
+            if (payload.status === 'partial') {{
+              const firstFailedItem = payload.failed_items && payload.failed_items.length ? payload.failed_items[0] : null;
+              const firstError = firstFailedItem && firstFailedItem.error ? firstFailedItem.error : 'unknown upload failure';
+              message.textContent = `Upload attempted: ${{payload.uploaded_now}} uploaded, ${{payload.failed_now}} failed, ${{payload.pending_after}} pending. First error: ${{firstError}}`;
+            }} else {{
+              message.textContent = `Upload complete: ${{payload.uploaded_now || 0}} uploaded.`;
+            }}
+          }});
+        }} catch (error) {{
+          message.textContent = `Upload failed: ${{error.message}}`;
+        }}
+      }});
+    }}
 
-    generateForm?.addEventListener('submit', async (event) => {{
-      event.preventDefault();
-      const daysBack = parseInt(document.getElementById('days_back').value, 10);
-      message.textContent = `Generating EPUB for last ${{daysBack}} day(s)...`;
-      try {{
-        const response = await fetch('/api/epubs/generate', {{
-          method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify({{ days_back: daysBack }}),
-        }});
-        const result = await response.json();
-        await pollJob(result.job_id, (payload) => {{
-          message.textContent = payload.status === 'ok'
-            ? `Generation complete for ${{payload.days_back}} day(s).`
-            : `Generation failed: ${{payload.reason || 'unknown'}}`;
-        }});
-      }} catch (error) {{
-        message.textContent = `Generation failed: ${{error.message}}`;
-      }}
-    }});
+    if (generateForm) {{
+      generateForm.addEventListener('submit', async (event) => {{
+        event.preventDefault();
+        const daysBack = parseInt(document.getElementById('days_back').value, 10);
+        message.textContent = `Generating EPUB for last ${{daysBack}} day(s)...`;
+        try {{
+          const response = await fetch('/api/epubs/generate', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ days_back: daysBack }}),
+          }});
+          const result = await response.json();
+          await pollJob(result.job_id, (payload) => {{
+            message.textContent = payload.status === 'ok'
+              ? `Generation complete for ${{payload.days_back}} day(s).`
+              : `Generation failed: ${{payload.reason || 'unknown'}}`;
+          }});
+        }} catch (error) {{
+          message.textContent = `Generation failed: ${{error.message}}`;
+        }}
+      }});
+    }}
 
-    sendLatestButton?.addEventListener('click', async () => {{
-      message.textContent = 'Sending latest generated EPUB...';
-      try {{
-        const response = await fetch('/api/epubs/send-latest', {{ method: 'POST' }});
-        const result = await response.json();
-        await pollJob(result.job_id, (payload) => {{
-          if (payload.status === 'ok') {{
-            message.textContent = `Sent ${{payload.filename}} to ${{payload.host}}`;
-          }} else {{
-            message.textContent = `Send failed: ${{payload.reason || 'unknown error'}}`;
-          }}
-        }});
-      }} catch (error) {{
-        message.textContent = `Send failed: ${{error.message}}`;
-      }}
-    }});
+    if (sendLatestButton) {{
+      sendLatestButton.addEventListener('click', async () => {{
+        message.textContent = 'Sending latest generated EPUB...';
+        try {{
+          const response = await fetch('/api/epubs/send-latest', {{ method: 'POST' }});
+          const result = await response.json();
+          await pollJob(result.job_id, (payload) => {{
+            if (payload.status === 'ok') {{
+              message.textContent = `Sent ${{payload.filename}} to ${{payload.host}}`;
+            }} else {{
+              message.textContent = `Send failed: ${{payload.reason || 'unknown error'}}`;
+            }}
+          }});
+        }} catch (error) {{
+          message.textContent = `Send failed: ${{error.message}}`;
+        }}
+      }});
+    }}
   </script>
 </body>
 </html>
