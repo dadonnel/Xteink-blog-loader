@@ -199,6 +199,42 @@ def test_do_post_api_send_latest_returns_job_id(monkeypatch):
     assert captured["payload"]["job_id"] == "job-123"
 
 
+def test_do_post_api_validate_passes_auto_discover_option(monkeypatch):
+    handler = app.Handler.__new__(app.Handler)
+    handler.path = "/api/validate"
+    handler._read_json_data = lambda: {"auto_discover_invalid_feeds": True}
+
+    captured = {}
+
+    def fake_start_background_job(_action, worker):
+        payload, status = worker()
+        captured["payload"] = payload
+        captured["status"] = status
+        return "job-validate-1"
+
+    def fake_build_validate_payload(auto_discover_invalid_feeds=False):
+        captured["auto_discover_invalid_feeds"] = auto_discover_invalid_feeds
+        return []
+
+    monkeypatch.setattr(app, "_start_background_job", fake_start_background_job)
+    monkeypatch.setattr(app, "build_validate_payload", fake_build_validate_payload)
+
+    response = {}
+
+    def fake_send_bytes(payload: bytes, content_type: str, status: int = 200):
+        response["payload"] = json.loads(payload.decode("utf-8"))
+        response["status"] = status
+        response["content_type"] = content_type
+
+    handler._send_bytes = fake_send_bytes
+
+    app.Handler.do_POST(handler)
+
+    assert captured["auto_discover_invalid_feeds"] is True
+    assert response["status"] == HTTPStatus.ACCEPTED
+    assert response["payload"]["job_id"] == "job-validate-1"
+
+
 def test_do_post_api_generate_rejects_non_int_days_back():
     handler = app.Handler.__new__(app.Handler)
     handler.path = "/api/epubs/generate"
