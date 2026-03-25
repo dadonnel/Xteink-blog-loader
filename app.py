@@ -458,7 +458,7 @@ def render_index_html(
       while (activeJobId === jobId) {{
         const response = await fetch(`/api/jobs/${{jobId}}`);
         const payload = await response.json();
-        jobLog.textContent = (payload.logs || []).join('\n');
+        jobLog.textContent = (payload.logs || []).join('\\n');
         if (payload.status === 'succeeded' || payload.status === 'failed') {{
           const result = payload.result || {{}};
           if (Array.isArray(result)) renderRows(result);
