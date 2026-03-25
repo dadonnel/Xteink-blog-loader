@@ -7,6 +7,8 @@ from typing import Dict, List, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from feed_discovery import FeedDiscoveryError, resolve_feed
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -140,7 +142,36 @@ def _fetch_feed(feed: Dict[str, str], timeout_s: int) -> FeedValidationResult:
     return FeedValidationResult(feed=feed["name"], status="ok", counts=counts)
 
 
-def validate_feeds(feeds: List[Dict[str, str]], timeout_s: int = 10, max_workers: int = 8) -> List[FeedValidationResult]:
+def _validate_feed_with_optional_discovery(
+    feed: Dict[str, str],
+    timeout_s: int,
+    auto_discover_invalid_feeds: bool,
+) -> FeedValidationResult:
+    result = _fetch_feed(feed, timeout_s)
+    if not auto_discover_invalid_feeds or result.status == "ok":
+        return result
+
+    try:
+        resolved = resolve_feed(feed["url"])
+    except (FeedDiscoveryError, KeyError):
+        return result
+
+    discovered_feed = {
+        "name": feed["name"],
+        "url": resolved.feed_url,
+    }
+    discovered_result = _fetch_feed(discovered_feed, timeout_s)
+    if discovered_result.status != "ok":
+        return result
+    return discovered_result
+
+
+def validate_feeds(
+    feeds: List[Dict[str, str]],
+    timeout_s: int = 10,
+    max_workers: int = 8,
+    auto_discover_invalid_feeds: bool = False,
+) -> List[FeedValidationResult]:
     if not feeds:
         return []
 
@@ -149,7 +180,12 @@ def validate_feeds(feeds: List[Dict[str, str]], timeout_s: int = 10, max_workers
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_index = {
-            executor.submit(_fetch_feed, feed, timeout_s): idx
+            executor.submit(
+                _validate_feed_with_optional_discovery,
+                feed,
+                timeout_s,
+                auto_discover_invalid_feeds,
+            ): idx
             for idx, feed in enumerate(feeds)
         }
         indexed_results = []

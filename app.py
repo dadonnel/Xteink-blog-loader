@@ -69,12 +69,13 @@ def load_sources(path: str = SOURCES_FILE):
     return feeds
 
 
-def build_validate_payload():
+def build_validate_payload(auto_discover_invalid_feeds: bool = False):
     feeds = load_sources()
     results = validate_feeds(
         feeds,
         timeout_s=VALIDATION_TIMEOUT_SECONDS,
         max_workers=VALIDATION_MAX_WORKERS,
+        auto_discover_invalid_feeds=auto_discover_invalid_feeds,
     )
     return [
         {
@@ -368,6 +369,10 @@ def render_index_html(
 
   <section id=\"dashboard\" class=\"card\" style=\"display: {dashboard_display};\">
     <h2>Feed Validation</h2>
+    <label style=\"display:block;margin-bottom:.5rem;\">
+      <input id=\"autoDiscoverInvalidFeeds\" type=\"checkbox\" />
+      Try automated feed finder for invalid feed URLs
+    </label>
     <button id=\"validateBtn\">Validate feeds</button>
     <h2>Upload Pending EPUBs</h2>
     <button id=\"uploadBtn\">Upload pending EPUBs</button>
@@ -419,6 +424,7 @@ def render_index_html(
 
   <script>
     const validateButton = document.getElementById('validateBtn');
+    const autoDiscoverInvalidFeedsCheckbox = document.getElementById('autoDiscoverInvalidFeeds');
     const tableBody = document.getElementById('resultsBody');
     const uploadButton = document.getElementById('uploadBtn');
     const sendLatestButton = document.getElementById('sendLatestBtn');
@@ -480,7 +486,12 @@ def render_index_html(
       validateButton.addEventListener('click', async () => {{
         message.textContent = 'Validating feeds...';
         try {{
-          const response = await fetch('/api/validate', {{ method: 'POST' }});
+          const autoDiscoverInvalidFeeds = !!(autoDiscoverInvalidFeedsCheckbox && autoDiscoverInvalidFeedsCheckbox.checked);
+          const response = await fetch('/api/validate', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify({{ auto_discover_invalid_feeds: autoDiscoverInvalidFeeds }}),
+          }});
           const result = await response.json();
           await pollJob(result.job_id, (payload) => {{
             message.textContent = `Validated ${{payload.length || 0}} feed(s).`;
@@ -635,7 +646,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/validate":
-            job_id = _start_background_job("validate", lambda: (build_validate_payload(), HTTPStatus.OK))
+            payload = self._read_json_data()
+            auto_discover_invalid_feeds = bool(payload.get("auto_discover_invalid_feeds"))
+            job_id = _start_background_job(
+                "validate",
+                lambda: (build_validate_payload(auto_discover_invalid_feeds), HTTPStatus.OK),
+            )
             self._send_bytes(
                 json.dumps({"status": "accepted", "job_id": job_id}).encode("utf-8"),
                 "application/json; charset=utf-8",
