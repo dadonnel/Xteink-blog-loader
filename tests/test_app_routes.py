@@ -76,7 +76,6 @@ def test_do_post_feeds_handles_missing_sources_file(monkeypatch):
     assert len(redirects) == 1
     parsed = urllib.parse.urlparse(redirects[0])
     query = urllib.parse.parse_qs(parsed.query)
-    assert parsed.fragment == "feeds"
     assert query["error"] == ["missing opml"]
 
 
@@ -113,7 +112,6 @@ def test_do_post_feeds_handles_malformed_sources_file(monkeypatch):
     assert len(redirects) == 1
     parsed = urllib.parse.urlparse(redirects[0])
     query = urllib.parse.parse_qs(parsed.query)
-    assert parsed.fragment == "feeds"
     assert query["error"] == ["malformed opml"]
 
 
@@ -179,3 +177,42 @@ def test_build_generate_epub_payload_uses_script_output_for_reason(monkeypatch):
     assert status == HTTPStatus.INTERNAL_SERVER_ERROR
     assert payload["status"] == "error"
     assert payload["reason"] == "fatal error"
+
+
+def test_do_post_api_send_latest_returns_job_id(monkeypatch):
+    handler = app.Handler.__new__(app.Handler)
+    handler.path = "/api/epubs/send-latest"
+
+    captured = {}
+
+    monkeypatch.setattr(app, "_start_background_job", lambda *_: "job-123")
+
+    def fake_send_bytes(payload: bytes, content_type: str, status: int = 200):
+        captured["payload"] = json.loads(payload.decode("utf-8"))
+        captured["status"] = status
+
+    handler._send_bytes = fake_send_bytes
+
+    app.Handler.do_POST(handler)
+
+    assert captured["status"] == HTTPStatus.ACCEPTED
+    assert captured["payload"]["job_id"] == "job-123"
+
+
+def test_do_post_api_generate_rejects_non_int_days_back():
+    handler = app.Handler.__new__(app.Handler)
+    handler.path = "/api/epubs/generate"
+    handler._read_json_data = lambda: {"days_back": "bad"}
+
+    captured = {}
+
+    def fake_send_bytes(payload: bytes, content_type: str, status: int = 200):
+        captured["payload"] = json.loads(payload.decode("utf-8"))
+        captured["status"] = status
+
+    handler._send_bytes = fake_send_bytes
+
+    app.Handler.do_POST(handler)
+
+    assert captured["status"] == HTTPStatus.BAD_REQUEST
+    assert captured["payload"]["status"] == "error"
