@@ -254,6 +254,164 @@ def build_upload_latest_epub_payload():
     }, HTTPStatus.OK
 
 
+def _find_record_for_file(state: UploadState, path: Path) -> tuple[str | None, dict]:
+    resolved = str(path.resolve())
+    matched = [
+        (key, record)
+        for key, record in state.records.items()
+        if record.get("filepath") == resolved
+    ]
+    if not matched:
+        return None, {}
+    matched.sort(key=lambda item: item[1].get("created_at") or "")
+    return matched[-1]
+
+
+def build_file_manager_payload():
+    state = UploadState(UPLOAD_STATE_FILE)
+    epub_files = list_epubs(UPLOAD_SYNC_DIR)
+    ensure_records_for_files(state, epub_files)
+    state.save()
+
+    files = []
+    for epub_file in epub_files:
+        key, record = _find_record_for_file(state, epub_file)
+        stat = epub_file.stat()
+        files.append(
+            {
+                "key": key,
+                "name": epub_file.name,
+                "filepath": str(epub_file.resolve()),
+                "size_bytes": stat.st_size,
+                "uploaded": bool(record.get("uploaded_successfully", False)),
+                "uploaded_at": record.get("uploaded_at"),
+                "attempt_count": int(record.get("attempt_count", 0)),
+                "error": record.get("error"),
+            }
+        )
+
+    uploaded_count = sum(1 for item in files if item["uploaded"])
+    return {
+        "status": "ok",
+        "files": files,
+        "total_files": len(files),
+        "uploaded_files": uploaded_count,
+        "pending_files": len(files) - uploaded_count,
+    }, HTTPStatus.OK
+
+
+def build_delete_uploaded_epubs_payload():
+    state = UploadState(UPLOAD_STATE_FILE)
+    epub_files = list_epubs(UPLOAD_SYNC_DIR)
+
+    deleted_files: list[str] = []
+    failed_files: list[dict[str, str]] = []
+    for epub_file in epub_files:
+        _, record = _find_record_for_file(state, epub_file)
+        if not record.get("uploaded_successfully", False):
+            continue
+        try:
+            epub_file.unlink()
+            deleted_files.append(epub_file.name)
+        except OSError as exc:
+            failed_files.append({"name": epub_file.name, "error": str(exc)})
+
+    if deleted_files:
+        deleted_paths = {str((UPLOAD_SYNC_DIR / name).resolve()) for name in deleted_files}
+        for key in list(state.records.keys()):
+            if state.records[key].get("filepath") in deleted_paths:
+                del state.records[key]
+        state.save()
+
+    status = "ok" if not failed_files else "partial"
+    return {
+        "status": status,
+        "deleted_count": len(deleted_files),
+        "deleted_files": deleted_files,
+        "failed_count": len(failed_files),
+        "failed_files": failed_files,
+    }, HTTPStatus.OK
+
+
+def build_delete_file_payload(filename: str):
+    if not filename:
+        return {"status": "error", "reason": "filename is required"}, HTTPStatus.BAD_REQUEST
+
+    target = (UPLOAD_SYNC_DIR / filename).resolve()
+    if target.parent != UPLOAD_SYNC_DIR.resolve() or target.suffix.lower() != ".epub":
+        return {"status": "error", "reason": "invalid filename"}, HTTPStatus.BAD_REQUEST
+    if not target.exists() or not target.is_file():
+        return {"status": "error", "reason": "file not found"}, HTTPStatus.NOT_FOUND
+
+    state = UploadState(UPLOAD_STATE_FILE)
+    try:
+        target.unlink()
+    except OSError as exc:
+        return {"status": "error", "reason": str(exc), "filename": filename}, HTTPStatus.BAD_REQUEST
+
+    target_path = str(target)
+    for key in list(state.records.keys()):
+        if state.records[key].get("filepath") == target_path:
+            del state.records[key]
+    state.save()
+
+    return {"status": "ok", "filename": filename}, HTTPStatus.OK
+
+
+def build_upload_file_payload(filename: str):
+    if not filename:
+        return {"status": "error", "reason": "filename is required"}, HTTPStatus.BAD_REQUEST
+
+    target = (UPLOAD_SYNC_DIR / filename).resolve()
+    if target.parent != UPLOAD_SYNC_DIR.resolve() or target.suffix.lower() != ".epub":
+        return {"status": "error", "reason": "invalid filename"}, HTTPStatus.BAD_REQUEST
+    if not target.exists() or not target.is_file():
+        return {"status": "error", "reason": "file not found"}, HTTPStatus.NOT_FOUND
+
+    if not host_reachable(
+        UPLOAD_HOST,
+        UPLOAD_REACHABILITY_METHOD,
+        UPLOAD_TCP_PORT,
+        UPLOAD_CONNECT_TIMEOUT,
+    ):
+        return {
+            "status": "unreachable",
+            "host": UPLOAD_HOST,
+            "filename": filename,
+            "reason": "Device is unreachable",
+        }, HTTPStatus.SERVICE_UNAVAILABLE
+
+    state = UploadState(UPLOAD_STATE_FILE)
+    pending = ensure_records_for_files(state, [target])
+    key = pending[0][0] if pending else _find_record_for_file(state, target)[0]
+
+    ok, response_text = upload_file(target, UPLOAD_HOST, UPLOAD_PATH, UPLOAD_FIELD_NAME)
+    if key:
+        rec = state.records.get(key, {})
+        rec["last_attempt_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        rec["attempt_count"] = int(rec.get("attempt_count", 0)) + 1
+        rec["uploaded_successfully"] = bool(ok)
+        rec["uploaded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if ok else None
+        rec["error"] = None if ok else response_text
+        state.records[key] = rec
+        state.save()
+
+    if not ok:
+        return {
+            "status": "error",
+            "host": UPLOAD_HOST,
+            "filename": filename,
+            "reason": response_text or "unknown upload failure",
+        }, HTTPStatus.BAD_GATEWAY
+
+    return {
+        "status": "ok",
+        "host": UPLOAD_HOST,
+        "filename": filename,
+        "response": response_text,
+    }, HTTPStatus.OK
+
+
 def _start_background_job(action: str, worker):
     job_id = uuid4().hex
     with JOBS_LOCK:
@@ -327,6 +485,7 @@ def render_index_html(
     dashboard_display = "block" if active_page == "dashboard" else "none"
     epubs_display = "block" if active_page == "epubs" else "none"
     feeds_display = "block" if active_page == "feeds" else "none"
+    files_display = "block" if active_page == "files" else "none"
 
     return f"""<!doctype html>
 <html lang=\"en\">
@@ -361,6 +520,7 @@ def render_index_html(
   <nav>
     <a href=\"/dashboard\">Dashboard</a>
     <a href=\"/epubs\">EPUB Operations</a>
+    <a href=\"/files\">File Manager</a>
     <a href=\"/feeds\">Feed Manager</a>
   </nav>
 
@@ -402,6 +562,25 @@ def render_index_html(
     <button id=\"sendLatestBtn\">Send latest EPUB to device</button>
   </section>
 
+  <section id=\"files\" class=\"card\" style=\"display: {files_display};\">
+    <h2>File Management</h2>
+    <button id=\"refreshFilesBtn\">Refresh file list</button>
+    <button id=\"deleteUploadedBtn\">Delete uploaded files</button>
+    <table>
+      <thead>
+        <tr>
+          <th>File</th>
+          <th>Size</th>
+          <th>Uploaded</th>
+          <th>Attempts</th>
+          <th>Error</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id=\"filesBody\"></tbody>
+    </table>
+  </section>
+
   <section class=\"card\">
     <h2>Progress & Error Feedback</h2>
     <p id=\"message\"></p>
@@ -429,6 +608,9 @@ def render_index_html(
     const uploadButton = document.getElementById('uploadBtn');
     const sendLatestButton = document.getElementById('sendLatestBtn');
     const generateForm = document.getElementById('generateForm');
+    const refreshFilesBtn = document.getElementById('refreshFilesBtn');
+    const deleteUploadedBtn = document.getElementById('deleteUploadedBtn');
+    const filesBody = document.getElementById('filesBody');
     const message = document.getElementById('message');
     const jobLog = document.getElementById('jobLog');
     let activeJobId = null;
@@ -454,8 +636,53 @@ def render_index_html(
       if (validateButton) validateButton.disabled = disabled;
       if (uploadButton) uploadButton.disabled = disabled;
       if (sendLatestButton) sendLatestButton.disabled = disabled;
+      if (refreshFilesBtn) refreshFilesBtn.disabled = disabled;
+      if (deleteUploadedBtn) deleteUploadedBtn.disabled = disabled;
       const submitBtn = generateForm ? generateForm.querySelector('button[type="submit"]') : null;
       if (submitBtn) submitBtn.disabled = disabled;
+    }}
+
+    function formatBytes(bytes) {{
+      const size = Number(bytes || 0);
+      if (size < 1024) return `${{size}} B`;
+      if (size < 1024 * 1024) return `${{(size / 1024).toFixed(1)}} KB`;
+      return `${{(size / (1024 * 1024)).toFixed(1)}} MB`;
+    }}
+
+    function renderFilesTable(files) {{
+      if (!filesBody) return;
+      filesBody.innerHTML = '';
+      if (!files.length) {{
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan=\"6\">No EPUB files found in output folder.</td>';
+        filesBody.appendChild(tr);
+        return;
+      }}
+
+      for (const file of files) {{
+        const tr = document.createElement('tr');
+        const uploadedLabel = file.uploaded ? `Yes${{file.uploaded_at ? ` (${{file.uploaded_at}})` : ''}}` : 'No';
+        tr.innerHTML = `
+          <td>${{file.name}}</td>
+          <td>${{formatBytes(file.size_bytes)}}</td>
+          <td class=\"${{file.uploaded ? 'ok' : ''}}\">${{uploadedLabel}}</td>
+          <td>${{file.attempt_count || 0}}</td>
+          <td>${{file.error || ''}}</td>
+          <td>
+            <button type=\"button\" data-action=\"download\" data-name=\"${{file.name}}\">Download</button>
+            <button type=\"button\" data-action=\"send\" data-name=\"${{file.name}}\">Send</button>
+            <button type=\"button\" data-action=\"delete\" data-name=\"${{file.name}}\">Delete</button>
+          </td>
+        `;
+        filesBody.appendChild(tr);
+      }}
+    }}
+
+    async function loadFiles() {{
+      const response = await fetch('/api/files');
+      const payload = await response.json();
+      renderFilesTable(payload.files || []);
+      return payload;
     }}
 
     async function pollJob(jobId, onSuccess) {{
@@ -564,6 +791,77 @@ def render_index_html(
         }}
       }});
     }}
+
+    if (refreshFilesBtn) {{
+      refreshFilesBtn.addEventListener('click', async () => {{
+        try {{
+          const payload = await loadFiles();
+          message.textContent = `Loaded ${{payload.total_files || 0}} file(s): ${{payload.uploaded_files || 0}} uploaded, ${{payload.pending_files || 0}} pending.`;
+        }} catch (error) {{
+          message.textContent = `Failed to load files: ${{error.message}}`;
+        }}
+      }});
+    }}
+
+    if (deleteUploadedBtn) {{
+      deleteUploadedBtn.addEventListener('click', async () => {{
+        try {{
+          const response = await fetch('/api/files/delete-uploaded', {{ method: 'POST' }});
+          const payload = await response.json();
+          await loadFiles();
+          message.textContent = `Deleted ${{payload.deleted_count || 0}} uploaded file(s).`;
+        }} catch (error) {{
+          message.textContent = `Failed to delete uploaded files: ${{error.message}}`;
+        }}
+      }});
+    }}
+
+    if (filesBody) {{
+      filesBody.addEventListener('click', async (event) => {{
+        const target = event.target;
+        if (!target || target.tagName !== 'BUTTON') return;
+        const action = target.getAttribute('data-action');
+        const filename = target.getAttribute('data-name');
+        if (!filename || !action) return;
+        if (action === 'download') {{
+          window.location.href = `/api/files/download?filename=${{encodeURIComponent(filename)}}`;
+          return;
+        }}
+        try {{
+          if (action === 'send') {{
+            const response = await fetch('/api/files/send', {{
+              method: 'POST',
+              headers: {{ 'Content-Type': 'application/json' }},
+              body: JSON.stringify({{ filename }}),
+            }});
+            const payload = await response.json();
+            message.textContent = payload.status === 'ok'
+              ? `Sent ${{filename}} to ${{payload.host}}.`
+              : `Send failed for ${{filename}}: ${{payload.reason || 'unknown error'}}`;
+          }}
+          if (action === 'delete') {{
+            const response = await fetch('/api/files/delete', {{
+              method: 'POST',
+              headers: {{ 'Content-Type': 'application/json' }},
+              body: JSON.stringify({{ filename }}),
+            }});
+            const payload = await response.json();
+            message.textContent = payload.status === 'ok'
+              ? `Deleted ${{filename}}.`
+              : `Delete failed for ${{filename}}: ${{payload.reason || 'unknown error'}}`;
+          }}
+          await loadFiles();
+        }} catch (error) {{
+          message.textContent = `File action failed: ${{error.message}}`;
+        }}
+      }});
+    }}
+
+    if (window.location.pathname === '/files') {{
+      loadFiles().catch((error) => {{
+        message.textContent = `Failed to load files: ${{error.message}}`;
+      }});
+    }}
   </script>
 </body>
 </html>
@@ -575,6 +873,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _send_file(self, path: Path, download_name: str):
+        payload = path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/epub+zip")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
         self.end_headers()
         self.wfile.write(payload)
 
@@ -603,6 +910,35 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
 
+        if parsed.path == "/api/files":
+            payload, status = build_file_manager_payload()
+            self._send_bytes(
+                json.dumps(payload).encode("utf-8"),
+                "application/json; charset=utf-8",
+                status,
+            )
+            return
+
+        if parsed.path == "/api/files/download":
+            query = urllib.parse.parse_qs(parsed.query)
+            filename = query.get("filename", [""])[0]
+            target = (UPLOAD_SYNC_DIR / filename).resolve() if filename else None
+            if (
+                not target
+                or target.parent != UPLOAD_SYNC_DIR.resolve()
+                or target.suffix.lower() != ".epub"
+                or not target.exists()
+                or not target.is_file()
+            ):
+                self._send_bytes(
+                    json.dumps({"status": "error", "reason": "file not found"}).encode("utf-8"),
+                    "application/json; charset=utf-8",
+                    HTTPStatus.NOT_FOUND,
+                )
+                return
+            self._send_file(target, target.name)
+            return
+
         if parsed.path.startswith("/api/jobs/"):
             job_id = parsed.path.rsplit("/", 1)[-1]
             with JOBS_LOCK:
@@ -625,7 +961,7 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect("/dashboard")
             return
 
-        if parsed.path not in {"/dashboard", "/epubs", "/feeds"}:
+        if parsed.path not in {"/dashboard", "/epubs", "/feeds", "/files"}:
             self._send_bytes(b"Not found", "text/plain; charset=utf-8", HTTPStatus.NOT_FOUND)
             return
 
@@ -695,6 +1031,35 @@ class Handler(BaseHTTPRequestHandler):
                 json.dumps({"status": "accepted", "job_id": job_id}).encode("utf-8"),
                 "application/json; charset=utf-8",
                 HTTPStatus.ACCEPTED,
+            )
+            return
+
+        if self.path == "/api/files/delete-uploaded":
+            payload, status = build_delete_uploaded_epubs_payload()
+            self._send_bytes(
+                json.dumps(payload).encode("utf-8"),
+                "application/json; charset=utf-8",
+                status,
+            )
+            return
+
+        if self.path == "/api/files/delete":
+            payload = self._read_json_data()
+            response, status = build_delete_file_payload(str(payload.get("filename", "")))
+            self._send_bytes(
+                json.dumps(response).encode("utf-8"),
+                "application/json; charset=utf-8",
+                status,
+            )
+            return
+
+        if self.path == "/api/files/send":
+            payload = self._read_json_data()
+            response, status = build_upload_file_payload(str(payload.get("filename", "")))
+            self._send_bytes(
+                json.dumps(response).encode("utf-8"),
+                "application/json; charset=utf-8",
+                status,
             )
             return
 
