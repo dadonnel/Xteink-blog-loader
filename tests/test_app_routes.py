@@ -1,4 +1,5 @@
 import json
+import os
 import urllib.parse
 import xml.etree.ElementTree as ET
 from http import HTTPStatus
@@ -252,3 +253,90 @@ def test_do_post_api_generate_rejects_non_int_days_back():
 
     assert captured["status"] == HTTPStatus.BAD_REQUEST
     assert captured["payload"]["status"] == "error"
+
+
+def test_infer_days_back_from_latest_epub_uses_latest_file(monkeypatch, tmp_path):
+    older = tmp_path / "older.epub"
+    latest = tmp_path / "latest.epub"
+    older.write_text("old", encoding="utf-8")
+    latest.write_text("new", encoding="utf-8")
+
+    older_ts = 1_700_000_000
+    latest_ts = 1_700_172_800
+    os.utime(older, (older_ts, older_ts))
+    os.utime(latest, (latest_ts, latest_ts))
+
+    class FixedDateTime(app.dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2023, 11, 18, tzinfo=tz)
+
+    monkeypatch.setattr(app.dt, "datetime", FixedDateTime)
+    days_back, latest_date = app.infer_days_back_from_latest_epub(tmp_path)
+
+    assert days_back == 2
+    assert latest_date == "2023-11-16"
+
+
+def test_do_post_api_generate_backfill_uses_latest_generated_date(monkeypatch):
+    handler = app.Handler.__new__(app.Handler)
+    handler.path = "/api/epubs/generate"
+    handler._read_json_data = lambda: {"backfill_to_last_generated": True}
+
+    captured = {}
+
+    def fake_start_background_job(_action, worker):
+        payload, status = worker()
+        captured["payload"] = payload
+        captured["status"] = status
+        return "job-gen-1"
+
+    monkeypatch.setattr(app, "_start_background_job", fake_start_background_job)
+    monkeypatch.setattr(app, "infer_days_back_from_latest_epub", lambda: (6, "2026-03-24"))
+    monkeypatch.setattr(
+        app,
+        "build_generate_epub_payload",
+        lambda days_back: ({"status": "ok", "days_back": days_back}, HTTPStatus.OK),
+    )
+
+    response = {}
+
+    def fake_send_bytes(payload: bytes, content_type: str, status: int = 200):
+        response["payload"] = json.loads(payload.decode("utf-8"))
+        response["status"] = status
+
+    handler._send_bytes = fake_send_bytes
+
+    app.Handler.do_POST(handler)
+
+    assert response["status"] == HTTPStatus.ACCEPTED
+    assert response["payload"]["job_id"] == "job-gen-1"
+    assert captured["status"] == HTTPStatus.OK
+    assert captured["payload"]["days_back"] == 6
+    assert captured["payload"]["inferred_from_last_generated"] is True
+    assert captured["payload"]["latest_generated_date"] == "2026-03-24"
+
+
+def test_do_post_api_generate_backfill_rejects_when_no_prior_epub(monkeypatch):
+    handler = app.Handler.__new__(app.Handler)
+    handler.path = "/api/epubs/generate"
+    handler._read_json_data = lambda: {"backfill_to_last_generated": True}
+
+    captured = {}
+
+    def fake_send_bytes(payload: bytes, content_type: str, status: int = 200):
+        captured["payload"] = json.loads(payload.decode("utf-8"))
+        captured["status"] = status
+
+    handler._send_bytes = fake_send_bytes
+    monkeypatch.setattr(
+        app,
+        "infer_days_back_from_latest_epub",
+        lambda: (None, "No EPUB files found in /tmp/epubs"),
+    )
+
+    app.Handler.do_POST(handler)
+
+    assert captured["status"] == HTTPStatus.BAD_REQUEST
+    assert captured["payload"]["status"] == "error"
+    assert "No EPUB files found" in captured["payload"]["reason"]

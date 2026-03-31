@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import datetime as dt
 import html
 import json
 import os
@@ -141,6 +142,20 @@ def build_manual_upload_payload():
         "failed_now": len(failed_items),
         "failed_items": failed_items,
     }, HTTPStatus.OK
+
+
+
+
+def infer_days_back_from_latest_epub(sync_dir: Path = UPLOAD_SYNC_DIR) -> tuple[int | None, str | None]:
+    epub_files = list_epubs(sync_dir)
+    if not epub_files:
+        return None, f"No EPUB files found in {sync_dir}"
+
+    latest_epub = max(epub_files, key=lambda path: path.stat().st_mtime)
+    latest_generated_at = dt.datetime.fromtimestamp(latest_epub.stat().st_mtime, tz=dt.timezone.utc).date()
+    today_utc = dt.datetime.now(tz=dt.timezone.utc).date()
+    days_back = max(1, (today_utc - latest_generated_at).days)
+    return days_back, latest_generated_at.isoformat()
 
 
 def build_generate_epub_payload(days_back: int):
@@ -556,6 +571,10 @@ def render_index_html(
     <form id=\"generateForm\">
       <label for=\"days_back\">Days back:</label>
       <input id=\"days_back\" type=\"number\" name=\"days_back\" min=\"1\" step=\"1\" value=\"{html.escape(form_data.get('days_back', '3'))}\" required />
+      <label style=\"display:block;margin-top:.6rem;\">
+        <input id=\"backfillToLastGenerated\" type=\"checkbox\" />
+        Auto-calculate days back from the most recently generated EPUB
+      </label>
       <button type=\"submit\">Generate new EPUB</button>
     </form>
     <h2>Send Latest Generated EPUB</h2>
@@ -754,18 +773,38 @@ def render_index_html(
       generateForm.addEventListener('submit', async (event) => {{
         event.preventDefault();
         const daysBack = parseInt(document.getElementById('days_back').value, 10);
-        message.textContent = `Generating EPUB for last ${{daysBack}} day(s)...`;
+        const backfillToLastGenerated = !!document.getElementById('backfillToLastGenerated')?.checked;
+        message.textContent = backfillToLastGenerated
+          ? 'Generating EPUB from the date of the most recent EPUB...'
+          : `Generating EPUB for last ${{daysBack}} day(s)...`;
         try {{
           const response = await fetch('/api/epubs/generate', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{ days_back: daysBack }}),
+            body: JSON.stringify({{
+              days_back: daysBack,
+              backfill_to_last_generated: backfillToLastGenerated,
+            }}),
           }});
           const result = await response.json();
+          if (!response.ok) {{
+            message.textContent = `Generation failed: ${{result.reason || result.error || 'unknown'}}`;
+            return;
+          }}
+          if (!result.job_id) {{
+            message.textContent = 'Generation failed: missing job id from server response.';
+            return;
+          }}
           await pollJob(result.job_id, (payload) => {{
-            message.textContent = payload.status === 'ok'
-              ? `Generation complete for ${{payload.days_back}} day(s).`
-              : `Generation failed: ${{payload.reason || 'unknown'}}`;
+            if (payload.status === 'ok') {{
+              if (payload.inferred_from_last_generated) {{
+                message.textContent = `Generation complete for ${{payload.days_back}} day(s) (from last EPUB date ${{payload.latest_generated_date}}).`;
+              }} else {{
+                message.textContent = `Generation complete for ${{payload.days_back}} day(s).`;
+              }}
+            }} else {{
+              message.textContent = `Generation failed: ${{payload.reason || 'unknown'}}`;
+            }}
           }});
         }} catch (error) {{
           message.textContent = `Generation failed: ${{error.message}}`;
@@ -1015,18 +1054,39 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/epubs/generate":
             payload = self._read_json_data()
-            try:
-                days_back = int(payload.get("days_back", 3))
-            except (TypeError, ValueError):
-                self._send_bytes(
-                    json.dumps({"status": "error", "reason": "days_back must be an integer"}).encode(
-                        "utf-8"
-                    ),
-                    "application/json; charset=utf-8",
-                    HTTPStatus.BAD_REQUEST,
-                )
-                return
-            job_id = _start_background_job("generate-epub", lambda: build_generate_epub_payload(days_back))
+            backfill_to_last_generated = bool(payload.get("backfill_to_last_generated"))
+            if backfill_to_last_generated:
+                inferred_days_back, latest_generated_date = infer_days_back_from_latest_epub()
+                if inferred_days_back is None:
+                    self._send_bytes(
+                        json.dumps({"status": "error", "reason": latest_generated_date}).encode("utf-8"),
+                        "application/json; charset=utf-8",
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                days_back = inferred_days_back
+            else:
+                latest_generated_date = None
+                try:
+                    days_back = int(payload.get("days_back", 3))
+                except (TypeError, ValueError):
+                    self._send_bytes(
+                        json.dumps({"status": "error", "reason": "days_back must be an integer"}).encode(
+                            "utf-8"
+                        ),
+                        "application/json; charset=utf-8",
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+
+            def _generate_epub_job():
+                result_payload, status = build_generate_epub_payload(days_back)
+                if status == HTTPStatus.OK and backfill_to_last_generated:
+                    result_payload["inferred_from_last_generated"] = True
+                    result_payload["latest_generated_date"] = latest_generated_date
+                return result_payload, status
+
+            job_id = _start_background_job("generate-epub", _generate_epub_job)
             self._send_bytes(
                 json.dumps({"status": "accepted", "job_id": job_id}).encode("utf-8"),
                 "application/json; charset=utf-8",
