@@ -787,6 +787,14 @@ def render_index_html(
             }}),
           }});
           const result = await response.json();
+          if (!response.ok) {{
+            message.textContent = `Generation failed: ${{result.reason || result.error || 'unknown'}}`;
+            return;
+          }}
+          if (!result.job_id) {{
+            message.textContent = 'Generation failed: missing job id from server response.';
+            return;
+          }}
           await pollJob(result.job_id, (payload) => {{
             if (payload.status === 'ok') {{
               if (payload.inferred_from_last_generated) {{
