@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 
 from .config import (
     DAYS_BACK,
+    MAX_ARTICLES_PER_FEED,
     MIN_CONTENT_LENGTH,
     REQUEST_TIMEOUT_SECONDS,
     STRICT_MIN_CONTENT_LENGTH,
@@ -62,8 +63,17 @@ class FeedService:
                         if recent:
                             link = entry.get("link", "")
                             title = entry.get("title", link or "Untitled")
-                            urls.append({"title": title, "url": link, "source": feed["name"]})
+                            published = entry.get("published") or entry.get("updated") or ""
+                            urls.append({
+                                "title": title,
+                                "url": link,
+                                "source": feed["name"],
+                                "category": feed.get("category", "Other"),
+                                "published": published,
+                            })
                             recent_count += 1
+                            if recent_count >= MAX_ARTICLES_PER_FEED:
+                                break
                     print(f"  {recent_count} recent posts")
                 else:
                     print(f"  Invalid RSS or no entries: {feed['url']}")
@@ -76,7 +86,7 @@ class FeedService:
 
     @staticmethod
     def clean_html_strict(soup: BeautifulSoup) -> str:
-        target_tags = ["p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "ul", "ol", "li"]
+        target_tags = ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "ul", "ol", "li", "strong", "b", "em", "i", "br", "hr", "img"]
         parts: list[str] = []
 
         main_selectors = [
@@ -102,7 +112,7 @@ class FeedService:
             if elem.find_parent(target_tags):
                 continue
             if hasattr(elem, "attrs"):
-                elem.attrs = {k: v for k, v in elem.attrs.items() if k in ["href", "src", "alt"]}
+                elem.attrs = {k: v for k, v in elem.attrs.items() if k in ["src", "alt"]}
             parts.append(str(elem))
 
         return "\n".join(parts)
@@ -124,8 +134,6 @@ class FeedService:
             return None
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        title = soup.title.string.strip() if soup.title and soup.title.string else "Untitled"
-
         for unwanted in soup(["script", "style", "nav", "footer", "header", "aside", "form", "button", "iframe"]):
             unwanted.decompose()
 
@@ -139,12 +147,4 @@ class FeedService:
             print(f"    ! Content too short ({len(clean_content)} chars). Skipping.")
             return None
 
-        header = f"""
-    <div style="margin-bottom: 2em; border-bottom: 1px solid #ccc; padding-bottom: 1em;">
-        <h1 style="margin:0;">{title}</h1>
-        <p style="font-size: 0.8em; color: #666;">
-            Source: <a href="{url}">{url}</a>
-        </p>
-    </div>
-    """
-        return header + clean_content
+        return clean_content

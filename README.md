@@ -24,11 +24,13 @@
   - `requests`
   - `ebooklib`
   - `beautifulsoup4`
+  - `pillow` (for CrossPoint image normalization)
+  - `qrcode` (optional original-article QR codes)
 
 Install dependencies:
 
 ```bash
-pip install feedparser requests ebooklib beautifulsoup4
+pip install feedparser requests ebooklib beautifulsoup4 pillow qrcode
 ```
 
 ## Quick start

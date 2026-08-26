@@ -25,11 +25,18 @@ class OpmlStore:
             tree = ET.parse(self.path)
             root = tree.getroot()
 
+            parent_map = {child: parent for parent in root.iter() for child in parent}
             for outline in root.findall(".//outline[@xmlUrl]"):
                 name = outline.get("text") or outline.get("title") or "Untitled Feed"
                 url = outline.get("xmlUrl")
                 if url:
-                    feeds.append({"name": name, "url": url})
+                    parent = parent_map.get(outline)
+                    category = (
+                        (parent.get("text") or parent.get("title"))
+                        if parent is not None and parent.tag == "outline"
+                        else "Other"
+                    )
+                    feeds.append({"name": name, "url": url, "category": category})
 
             print(f"Loaded {len(feeds)} feeds from OPML.")
         except Exception as exc:

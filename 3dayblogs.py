@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from rss_epub.config import OUTPUT_DIR as DEFAULT_OUTPUT_DIR
 from rss_epub.config import SOURCES_FILE as DEFAULT_SOURCES_FILE
 from rss_epub.config import DAYS_BACK as DEFAULT_DAYS_BACK
+from rss_epub.config import MAX_ARTICLES, MAX_TOTAL_WORDS
 
 
 def _resolve_sources_file() -> Path:
@@ -61,15 +62,26 @@ def main() -> int:
         return 0
 
     articles: list[dict[str, str]] = []
+    total_words = 0
     for item in urls:
+        if len(articles) >= MAX_ARTICLES:
+            break
         content = feed_service.fetch_and_extract(item["url"])
         if content:
+            words = len(content.split())
+            if total_words + words > MAX_TOTAL_WORDS:
+                continue
             articles.append(
                 {
                     "title": item.get("title") or item["url"],
                     "content": content,
+                    "source": item.get("source", "Unknown source"),
+                    "category": item.get("category", "Other"),
+                    "published": item.get("published", ""),
+                    "url": item["url"],
                 }
             )
+            total_words += words
 
     if not articles:
         print("No article content extracted. Exiting.")
