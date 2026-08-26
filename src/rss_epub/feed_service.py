@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import re
 import ssl
 
 import feedparser
@@ -123,6 +124,60 @@ class FeedService:
             tag.decompose()
         return str(soup)
 
+
+    @staticmethod
+    def remove_trailing_boilerplate(html: str) -> str:
+        fragment = BeautifulSoup(f"<div>{html}</div>", "html.parser")
+        container = fragment.div
+        if container is None:
+            return html
+
+        keyword_patterns = [
+            re.compile(r"\bmonthly briefing\b", re.IGNORECASE),
+            re.compile(r"\bsponsor me\b", re.IGNORECASE),
+            re.compile(r"\bpay me to send you less\b", re.IGNORECASE),
+            re.compile(r"\bdisclosures\b", re.IGNORECASE),
+            re.compile(r"\bcolophon\b", re.IGNORECASE),
+        ]
+
+        def is_year_archive_list(elem) -> bool:
+            if elem.name not in {"ul", "ol"}:
+                return False
+            links = elem.find_all("a")
+            year_links = [a.get_text(strip=True) for a in links if re.fullmatch(r"(?:19|20)\d{2}", a.get_text(strip=True))]
+            return len(year_links) >= 5
+
+        def is_boilerplate(elem) -> bool:
+            text = elem.get_text(" ", strip=True)
+            if not text:
+                return False
+            if any(pattern.search(text) for pattern in keyword_patterns):
+                return True
+            return is_year_archive_list(elem)
+
+        top_level = [child for child in container.children if getattr(child, "name", None)]
+        keep_until = len(top_level)
+
+        for idx in range(len(top_level) - 1, -1, -1):
+            elem = top_level[idx]
+            if is_boilerplate(elem):
+                keep_until = idx
+                continue
+            if keep_until < len(top_level):
+                text = elem.get_text(" ", strip=True)
+                if elem.name in {"hr", "br"} or not text:
+                    keep_until = idx
+                    continue
+            break
+
+        if keep_until == len(top_level):
+            return html
+
+        for elem in top_level[keep_until:]:
+            elem.decompose()
+
+        return "".join(str(child) for child in container.children)
+
     def fetch_and_extract(self, url: str) -> str | None:
         try:
             headers = {"User-Agent": feedparser.USER_AGENT}
@@ -142,6 +197,8 @@ class FeedService:
         if len(clean_content) < STRICT_MIN_CONTENT_LENGTH:
             print("    (Strict cleaning returned little text, using fallback...)")
             clean_content = self.clean_html_fallback(soup)
+
+        clean_content = self.remove_trailing_boilerplate(clean_content)
 
         if len(clean_content) < MIN_CONTENT_LENGTH:
             print(f"    ! Content too short ({len(clean_content)} chars). Skipping.")
