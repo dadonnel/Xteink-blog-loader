@@ -17,6 +17,22 @@ REQUEST_TIMEOUT_SECONDS = 15
 STRICT_MIN_CONTENT_LENGTH = 500
 MIN_CONTENT_LENGTH = 300
 
+# CrossPoint X4 pocket-reader profile.  These intentionally conservative
+# limits keep chapter navigation and first-open image indexing responsive.
+EPUB_PROFILE = "crosspoint_x4"
+MAX_ARTICLES = 40
+MAX_TOTAL_WORDS = 75_000
+MAX_ARTICLES_PER_FEED = 5
+MAX_IMAGES_PER_ARTICLE = 2
+MAX_TOTAL_IMAGES = 50
+IMAGE_MAX_WIDTH = 440
+IMAGE_MAX_HEIGHT = 700
+COVER_SIZE = (480, 800)
+TOC_TITLE_MAX_CHARS = 55
+LONG_ARTICLE_WORDS = 8_000
+ARTICLE_QR_CODES = True
+QR_SIZE = 180
+
 # Metadata
 BOOK_PREFIX = "genai-weekly"
 BOOK_AUTHOR = "GenAI Weekly"
