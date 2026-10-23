@@ -53,9 +53,26 @@ class FeedService:
     def fetch_weekly_urls(self, feeds: list[dict[str, str]]) -> list[dict[str, str]]:
         urls: list[dict[str, str]] = []
         for feed in feeds:
+            if feed.get("paused") in {True, "true", "1", "yes"}:
+                continue
             try:
                 print(f"Fetching {feed['name']}...")
-                parsed = feedparser.parse(feed["url"])
+                if feed.get("feed_type") == "json":
+                    response = requests.get(feed["url"], timeout=REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": feedparser.USER_AGENT})
+                    response.raise_for_status()
+                    entries = []
+                    for item in response.json().get("items", []):
+                        published = item.get("date_published") or item.get("date_modified") or ""
+                        parsed_date = None
+                        if published:
+                            try:
+                                parsed_date = datetime.datetime.fromisoformat(published.replace("Z", "+00:00")).utctimetuple()
+                            except ValueError:
+                                pass
+                        entries.append({"id": item.get("id", ""), "link": item.get("url") or item.get("external_url") or "", "title": item.get("title") or "Untitled", "published": published, "published_parsed": parsed_date})
+                    parsed = type("ParsedFeed", (), {"entries": entries})()
+                else:
+                    parsed = feedparser.parse(feed["url"])
                 if hasattr(parsed, "entries") and len(parsed.entries) > 0:
                     recent_count = 0
                     for entry in parsed.entries:
@@ -67,6 +84,8 @@ class FeedService:
                             urls.append({
                                 "title": title,
                                 "url": link,
+                                "entry_id": entry.get("id") or entry.get("guid") or "",
+                                "feed_url": feed["url"],
                                 "source": feed["name"],
                                 "category": feed.get("category", "Other"),
                                 "published": published,
@@ -80,8 +99,10 @@ class FeedService:
             except Exception as exc:
                 print(f"  Feed error {feed['name']}: {exc}")
 
+        from .history import article_key
+
         seen: set[str] = set()
-        unique = [item for item in urls if item["url"] not in seen and not seen.add(item["url"])]
+        unique = [item for item in urls if article_key(item) not in seen and not seen.add(article_key(item))]
         return unique
 
     @staticmethod

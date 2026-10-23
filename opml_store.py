@@ -19,6 +19,8 @@ class Feed:
     feed_id: str
     name: str
     url: str
+    paused: bool = False
+    feed_type: str = "rss"
 
 
 def _feed_id(url: str) -> str:
@@ -30,6 +32,8 @@ class OPMLStore:
         self.path = Path(path)
 
     def parse_feeds(self) -> Dict[str, List[Feed]]:
+        if not self.path.exists():
+            return {}
         tree = ET.parse(self.path)
         root = tree.getroot()
         body = root.find("body")
@@ -54,7 +58,7 @@ class OPMLStore:
                     or url
                 ).strip()
                 grouped[category].append(
-                    Feed(feed_id=_feed_id(url), name=name, url=url)
+                    Feed(feed_id=_feed_id(url), name=name, url=url, paused=(feed_node.get("paused") or "false").lower() == "true", feed_type=feed_node.get("type") or "rss")
                 )
         return grouped
 
@@ -76,11 +80,16 @@ class OPMLStore:
         if not self._is_valid_url(url):
             raise ValidationError("Feed URL is malformed. Use http:// or https://")
 
-        tree = ET.parse(self.path)
-        root = tree.getroot()
-        body = root.find("body")
-        if body is None:
+        if self.path.exists():
+            tree = ET.parse(self.path)
+            root = tree.getroot()
+            body = root.find("body")
+            if body is None:
+                body = ET.SubElement(root, "body")
+        else:
+            root = ET.Element("opml", {"version": "2.0"})
             body = ET.SubElement(root, "body")
+            tree = ET.ElementTree(root)
 
         if self._url_exists(body, url):
             raise ValidationError("A feed with this URL already exists.")
@@ -97,6 +106,33 @@ class OPMLStore:
             },
         )
         self._atomic_write(tree)
+
+    def update_feed(self, feed_id: str, *, name: str | None = None, url: str | None = None, category: str | None = None, paused: bool | None = None) -> Feed:
+        tree = ET.parse(self.path); root = tree.getroot(); body = root.find("body")
+        if body is None:
+            raise ValidationError("Feed not found.")
+        for category_node in list(body.findall("outline")):
+            for node in list(category_node.findall("outline")):
+                current_url = (node.get("xmlUrl") or "").strip()
+                if _feed_id(current_url) != feed_id:
+                    continue
+                next_url = (url if url is not None else current_url).strip()
+                if not self._is_valid_url(next_url):
+                    raise ValidationError("Feed URL is malformed. Use http:// or https://")
+                next_name = (name if name is not None else node.get("text") or next_url).strip()
+                if not next_name:
+                    raise ValidationError("Feed name cannot be empty.")
+                node.set("xmlUrl", next_url); node.set("text", next_name); node.set("title", next_name)
+                if paused is not None:
+                    node.set("paused", "true" if paused else "false")
+                next_category = (category if category is not None else category_node.get("text") or "Uncategorized").strip() or "Uncategorized"
+                current_category = category_node.get("text") or category_node.get("title") or "Uncategorized"
+                if next_category != current_category:
+                    category_node.remove(node); self._find_or_create_category(body, next_category).append(node)
+                    if not category_node.findall("outline"): body.remove(category_node)
+                self._atomic_write(tree)
+                return Feed(_feed_id(next_url), next_name, next_url, (node.get("paused") or "false") == "true", node.get("type") or "rss")
+        raise ValidationError("Feed not found.")
 
     def delete_feed(self, *, url: str | None = None, feed_id: str | None = None) -> bool:
         url = (url or "").strip()

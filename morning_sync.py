@@ -21,39 +21,53 @@ import socket
 import subprocess
 import sys
 import time
+import threading
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-DEFAULT_HOST = os.getenv("MORNING_SYNC_HOST", "192.168.1.211")
-DEFAULT_SYNC_DIR = Path("storage/downloads/rss_epub/output_epubs/xteink_sync")
-DEFAULT_STATE_FILE = Path("storage/downloads/rss_epub/upload_state.json")
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from rss_epub.settings import SettingsStore
+
+_SHARED_SETTINGS = SettingsStore().effective()
+
+DEFAULT_HOST = _SHARED_SETTINGS["device_address"]
+DEFAULT_SYNC_DIR = Path(os.getenv("MORNING_SYNC_SYNC_DIR", os.path.join(os.getenv("OUTPUT_DIR", "storage/downloads/rss_epub/output_epubs"), "xteink_sync")))
+DEFAULT_STATE_FILE = Path(os.getenv("MORNING_SYNC_STATE_FILE", "storage/downloads/rss_epub/upload_state.json"))
 DEFAULT_GENERATOR_CMD = os.getenv("MORNING_SYNC_GENERATOR_CMD", "python3 3dayblogs.py")
 DEFAULT_UPLOAD_PATH = os.getenv("MORNING_SYNC_UPLOAD_PATH", "/upload")
 DEFAULT_UPLOAD_FIELD_NAME = os.getenv("MORNING_SYNC_UPLOAD_FIELD_NAME", "file")
 
 
 class UploadState:
+    _locks: dict[str, threading.RLock] = {}
+    _locks_guard = threading.Lock()
+
     def __init__(self, path: Path) -> None:
         self.path = path
+        with self._locks_guard:
+            self._lock = self._locks.setdefault(str(path.resolve()), threading.RLock())
         self.data: dict[str, Any] = {"records": {}, "meta": {}}
         self._load()
 
     def _load(self) -> None:
-        if self.path.exists():
-            try:
-                self.data = json.loads(self.path.read_text(encoding="utf-8"))
-                if "records" not in self.data:
-                    self.data["records"] = {}
-                if "meta" not in self.data:
-                    self.data["meta"] = {}
-            except json.JSONDecodeError:
-                print(f"WARN: state file is invalid JSON, starting fresh: {self.path}")
-                self.data = {"records": {}, "meta": {}}
+        with self._lock:
+            if self.path.exists():
+                try:
+                    self.data = json.loads(self.path.read_text(encoding="utf-8"))
+                    if "records" not in self.data:
+                        self.data["records"] = {}
+                    if "meta" not in self.data:
+                        self.data["meta"] = {}
+                except json.JSONDecodeError:
+                    print(f"WARN: state file is invalid JSON, starting fresh: {self.path}")
+                    self.data = {"records": {}, "meta": {}}
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(json.dumps(self.data, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+            tmp.write_text(json.dumps(self.data, indent=2, sort_keys=True), encoding="utf-8")
+            tmp.replace(self.path)
 
     @property
     def records(self) -> dict[str, Any]:
@@ -64,7 +78,12 @@ class UploadState:
         return self.data.setdefault("meta", {})
 
 
-def now_local() -> dt.datetime:
+def now_local(timezone_name: str | None = None) -> dt.datetime:
+    if timezone_name:
+        try:
+            return dt.datetime.now(ZoneInfo(timezone_name))
+        except ZoneInfoNotFoundError:
+            pass
     return dt.datetime.now().astimezone()
 
 
@@ -260,14 +279,16 @@ def run_daily_loop(args: argparse.Namespace) -> None:
     consecutive_unreachable = 0
 
     while True:
-        now = now_local()
-        today_0600 = now.replace(hour=6, minute=0, second=0, microsecond=0)
-        today_0730 = now.replace(hour=7, minute=30, second=0, microsecond=0)
+        now = now_local(args.timezone)
+        generation_hour, generation_minute = map(int, args.generation_time.split(":"))
+        window_end_hour, window_end_minute = map(int, args.delivery_window_end.split(":"))
+        today_0600 = now.replace(hour=generation_hour, minute=generation_minute, second=0, microsecond=0)
+        today_0730 = now.replace(hour=window_end_hour, minute=window_end_minute, second=0, microsecond=0)
         today_str = now.date().isoformat()
         last_gen_date = state.meta.get("last_generation_date")
 
         if now < today_0600:
-            print(f"[{epoch_iso()}] Sleeping until 06:00")
+            print(f"[{epoch_iso()}] Sleeping until {args.generation_time} ({args.timezone})")
             sleep_until(today_0600)
             continue
 
@@ -302,13 +323,13 @@ def run_daily_loop(args: argparse.Namespace) -> None:
                     f"[{epoch_iso()}] Host {args.host} unreachable; "
                     f"next check in {sleep_seconds}s"
                 )
-                window_end = now.replace(hour=7, minute=30, second=0, microsecond=0)
+                window_end = today_0730
                 sleep_until(min(now + dt.timedelta(seconds=sleep_seconds), window_end))
             continue
 
         # outside window and after today's work
-        tomorrow_0600 = (today_0600 + dt.timedelta(days=1)).replace(hour=6, minute=0)
-        print(f"[{epoch_iso()}] Outside upload window; sleeping until next day 06:00")
+        tomorrow_0600 = today_0600 + dt.timedelta(days=1)
+        print(f"[{epoch_iso()}] Outside upload window; sleeping until next day {args.generation_time}")
         cleanup_stale_records(state, args.cleanup_days)
         state.save()
         sleep_until(tomorrow_0600)
@@ -325,6 +346,9 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_UPLOAD_PATH,
         help="HTTP upload endpoint path on the device",
     )
+    parser.add_argument("--generation-time", default=_SHARED_SETTINGS["generation_time"], help="Local generation time (HH:MM)")
+    parser.add_argument("--delivery-window-end", default=_SHARED_SETTINGS["delivery_window_end"], help="End of delivery retry window (HH:MM)")
+    parser.add_argument("--timezone", default=_SHARED_SETTINGS["timezone"], help="IANA timezone name")
     parser.add_argument(
         "--upload-field-name",
         default=DEFAULT_UPLOAD_FIELD_NAME,

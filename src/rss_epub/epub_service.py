@@ -10,6 +10,7 @@ import re
 import textwrap
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from uuid import uuid4
 
 from bs4 import BeautifulSoup, NavigableString
 from ebooklib import epub
@@ -201,12 +202,14 @@ class EpubService:
         book.add_item(epub.EpubItem(uid=f"qr-{index}", file_name=file_name, media_type="image/png", content=data.getvalue()))
         return f'<hr/><p><strong>Continue on the web</strong></p><img src="{file_name}" alt="QR code for original article"/>'
 
-    def build_epub(self, articles: list[dict[str, str]]) -> Path:
+    def build_epub(self, articles: list[dict[str, str]], edition_id: str | None = None) -> Path:
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        today = datetime.date.today().isoformat()
-        book_title = f"GenAI Reader - {today}"
+        now = datetime.datetime.now().astimezone()
+        today = now.date().isoformat()
+        edition_id = edition_id or f"{now.strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
+        book_title = f"GenAI Reader - {now.strftime('%b %d, %Y %H:%M')}"
         book = epub.EpubBook()
-        book.set_identifier(f"{BOOK_PREFIX}-{today}")
+        book.set_identifier(f"{BOOK_PREFIX}-{edition_id}")
         book.set_title(book_title)
         book.set_language(BOOK_LANGUAGE)
         book.add_author(BOOK_AUTHOR)
@@ -257,6 +260,6 @@ class EpubService:
         book.toc = toc
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        out_path = self.output_dir / f"{BOOK_PREFIX}-{today}.epub"
+        out_path = self.output_dir / f"{BOOK_PREFIX}-{edition_id}.epub"
         epub.write_epub(str(out_path), book)
         return out_path

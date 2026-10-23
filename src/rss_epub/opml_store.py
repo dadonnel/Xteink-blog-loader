@@ -36,7 +36,8 @@ class OpmlStore:
                         if parent is not None and parent.tag == "outline"
                         else "Other"
                     )
-                    feeds.append({"name": name, "url": url, "category": category})
+                    feeds.append({"name": name, "url": url, "category": category, "feed_type": outline.get("type") or "rss"})
+                    feeds[-1]["paused"] = (outline.get("paused") or "false").lower() == "true"
 
             print(f"Loaded {len(feeds)} feeds from OPML.")
         except Exception as exc:

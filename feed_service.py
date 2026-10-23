@@ -1,4 +1,5 @@
 import datetime
+import json
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -72,6 +73,15 @@ def _find_child_text(node: ET.Element, names: set[str]) -> str | None:
 
 
 def _extract_entries(xml_content: bytes) -> List[Dict[str, object]]:
+    if xml_content.lstrip().startswith(b"{"):
+        document = json.loads(xml_content)
+        if not isinstance(document, dict) or "items" not in document:
+            return []
+        result = []
+        for item in document.get("items") or []:
+            published = item.get("date_published") or item.get("date_modified") if isinstance(item, dict) else None
+            result.append({"published_parsed": _parse_date_struct(published), "updated_parsed": None})
+        return result
     root = ET.fromstring(xml_content)
     root_name = _strip_ns(root.tag)
     entries: List[Dict[str, object]] = []
@@ -127,7 +137,7 @@ def _fetch_feed(feed: Dict[str, str], timeout_s: int) -> FeedValidationResult:
 
     try:
         entries = _extract_entries(payload)
-    except ET.ParseError:
+    except (ET.ParseError, json.JSONDecodeError):
         return FeedValidationResult(feed=feed["name"], status="error", counts=counts, reason="parse failure")
 
     if not entries:
