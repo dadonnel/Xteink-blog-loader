@@ -27,6 +27,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from rss_epub.settings import SettingsStore
+from rss_epub.config import HISTORY_FILE
+from rss_epub.history import HistoryStore
 
 _SHARED_SETTINGS = SettingsStore().effective()
 
@@ -234,6 +236,22 @@ def try_upload_pending(
             rec["uploaded_successfully"] = True
             rec["uploaded_at"] = epoch_iso()
             rec["error"] = None
+            try:
+                history = HistoryStore(HISTORY_FILE)
+                resolved = str(path.resolve())
+                matching = next(
+                    (
+                        edition_id
+                        for edition_id, edition in history.load()["editions"].items()
+                        if resolved in {edition.get("sync_file"), edition.get("output_file")}
+                    ),
+                    None,
+                )
+                if matching:
+                    rec["edition_id"] = matching
+                    history.update_delivery(matching, status="uploaded", detail=out or None)
+            except (OSError, KeyError, TypeError):
+                pass
             print(f"  OK: {path.name}")
         else:
             rec["uploaded_successfully"] = False

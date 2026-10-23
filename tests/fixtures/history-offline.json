@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "articles": {},
+  "editions": {
+    "fixture-offline": {
+      "edition_id": "fixture-offline",
+      "filename": "fridays-reading.epub",
+      "sync_file": "tests/fixtures/sample-edition.epub",
+      "output_file": "tests/fixtures/sample-edition.epub",
+      "created_at": "2026-10-23T07:14:00-04:00",
+      "article_count": 12,
+      "estimated_reading_minutes": 48,
+      "delivery_status": "queued",
+      "delivery_detail": "Reader was unreachable. The edition is retained for retry.",
+      "warnings": []
+    }
+  }
+}

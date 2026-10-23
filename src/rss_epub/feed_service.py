@@ -33,10 +33,14 @@ class FeedService:
         self.days_back = days_back
 
     def is_recent(self, entry) -> tuple[bool, str]:
-        if not hasattr(entry, "published_parsed") and not hasattr(entry, "updated_parsed"):
+        if isinstance(entry, dict):
+            has_date = "published_parsed" in entry or "updated_parsed" in entry
+            parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+        else:
+            has_date = hasattr(entry, "published_parsed") or hasattr(entry, "updated_parsed")
+            parsed = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
+        if not has_date:
             return True, "No date found (defaulting to True)"
-
-        parsed = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
         if not parsed:
             return True, "Date unparseable (defaulting to True)"
 

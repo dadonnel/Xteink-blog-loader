@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#F5F2EB" />
+  <title>PAGE_TITLE · Xteink Reader</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body data-page="ACTIVE_PAGE">
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="app-header">
+    <div class="shell header-inner">
+      <a class="brand" href="/today" aria-label="Xteink Reader, Today">
+        <span class="brand-mark" aria-hidden="true">XR</span>
+        <span>Xteink Reader</span>
+      </a>
+      <nav class="primary-nav" aria-label="Primary navigation">
+        <a NAV_TODAY href="/today"><span aria-hidden="true">⌂</span>Today</a>
+        <a NAV_EDITIONS href="/editions"><span aria-hidden="true">▤</span>Editions</a>
+        <a NAV_SOURCES href="/sources"><span aria-hidden="true">◉</span>Sources</a>
+        <a NAV_SETTINGS href="/settings"><span aria-hidden="true">⚙</span>Settings</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell main-content" id="main-content" tabindex="-1">
+    <div class="flash flash-success" MESSAGE_HIDDEN>MESSAGE_TEXT</div>
+    <div class="flash flash-error" ERROR_HIDDEN>ERROR_TEXT</div>
+
+    <section PAGE_TODAY aria-labelledby="today-title">
+      <header class="page-heading compact-heading">
+        <p class="eyebrow">Today</p>
+        <h1 id="today-title">Your reading desk</h1>
+        <p class="friendly-date" id="friendlyDate"></p>
+      </header>
+
+      <article class="latest-edition" id="latestEdition" aria-busy="true">
+        <div class="skeleton-block"></div>
+      </article>
+
+      <section class="status-strip" aria-label="Reader and schedule status">
+        <div><span class="status-icon" aria-hidden="true">●</span><span><strong>Reader</strong><small id="deviceStatus">Not checked yet</small></span></div>
+        <div><span class="status-icon" aria-hidden="true">◷</span><span><strong>Morning schedule</strong><small id="scheduleStatus">Loading schedule…</small></span></div>
+      </section>
+
+      <section class="recent-section" aria-labelledby="recent-title">
+        <div class="section-heading"><h2 id="recent-title">Recent editions</h2><a href="/editions">View all</a></div>
+        <div class="edition-list compact-list" id="recentEditions"></div>
+      </section>
+
+      <details class="diagnostics disclosure">
+        <summary>Diagnostics and feed health</summary>
+        <div class="diagnostic-actions">
+          <label class="check-control"><input id="autoDiscoverInvalidFeeds" type="checkbox" /> Try feed discovery when a source is invalid</label>
+          <button class="button button-secondary" id="validateBtn" type="button">Check source health</button>
+          <button class="button button-secondary" id="uploadBtn" type="button">Retry all pending uploads</button>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Source</th><th>1 day</th><th>7 days</th><th>30 days</th><th>Status</th></tr></thead><tbody id="resultsBody"></tbody></table></div>
+      </details>
+    </section>
+
+    <section PAGE_EDITIONS aria-labelledby="editions-title">
+      <header class="page-heading">
+        <p class="eyebrow">Editions</p>
+        <h1 id="editions-title">Prepare your next read</h1>
+        <p>Choose a comfortable size. The limits are maximums, not promised reading times.</p>
+      </header>
+
+      <section class="prepare-panel" aria-labelledby="prepare-title">
+        <h2 id="prepare-title">Edition size</h2>
+        <form id="generateForm">
+          <fieldset class="preset-group">
+            <legend class="sr-only">Edition size preset</legend>
+            <label><input type="radio" name="preset" value="quick" /><span><strong>Quick read</strong><small>Up to 6 articles · 9,000 words</small></span></label>
+            <label><input type="radio" name="preset" value="commute" /><span><strong>Commute</strong><small>Up to 15 articles · 25,000 words</small></span></label>
+            <label><input type="radio" name="preset" value="full" checked /><span><strong>Full edition</strong><small>Up to 40 articles · 75,000 words</small></span></label>
+          </fieldset>
+          <details class="disclosure advanced-options">
+            <summary>Advanced options</summary>
+            <div class="form-grid">
+              <label for="days_back">Look back this many days<input id="days_back" type="number" name="days_back" min="1" step="1" value="FORM_DAYS" required /></label>
+              <label class="check-control"><input id="backfillToLastGenerated" type="checkbox" /> Start from my most recent local EPUB date</label>
+              <label class="check-control"><input id="includePrevious" type="checkbox" /> Include previously collected articles</label>
+            </div>
+          </details>
+          <div class="button-row">
+            <button class="button button-primary" type="submit" data-mode="prepare">Prepare edition</button>
+            <button class="button button-secondary" type="submit" data-mode="prepare-send">Prepare &amp; send automatically</button>
+          </div>
+        </form>
+        <div id="editionWorkflow" class="workflow-region" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="collection-section" aria-labelledby="collection-title">
+        <div class="section-heading"><div><p class="eyebrow">Collection</p><h2 id="collection-title">Your editions</h2></div><button class="text-button danger-text" id="deleteUploadedBtn" type="button">Clean up delivered copies</button></div>
+        <div class="edition-list" id="editionCollection"></div>
+      </section>
+    </section>
+
+    <section PAGE_SOURCES aria-labelledby="sources-title">
+      <header class="page-heading">
+        <p class="eyebrow">Sources</p>
+        <h1 id="sources-title">Your reading sources</h1>
+        <p>Active sources are considered when preparing an edition. Paused sources stay saved.</p>
+      </header>
+      <details class="add-source disclosure" open>
+        <summary>Add a source</summary>
+        <form method="post" action="/feeds" class="source-form">
+          <label for="sourceName">Source name <span>optional</span><input id="sourceName" name="name" value="FORM_NAME" autocomplete="off" /></label>
+          <label for="sourceUrl">Website or feed URL<input id="sourceUrl" name="url" type="url" value="FORM_URL" placeholder="https://example.com/feed.xml" required /></label>
+          <label for="sourceCategory">Category <span>optional</span><input id="sourceCategory" name="category" value="FORM_CATEGORY" placeholder="Technology" /></label>
+          <button class="button button-primary" type="submit">Add source</button>
+        </form>
+      </details>
+      <div class="source-groups">FEED_GROUPS</div>
+    </section>
+
+    <section PAGE_SETTINGS aria-labelledby="settings-title">
+      <header class="page-heading">
+        <p class="eyebrow">Settings</p>
+        <h1 id="settings-title">Reader and schedule</h1>
+        <p>Connection checks do not upload a book or confirm that one appears in the reader library.</p>
+      </header>
+      <form id="settingsForm" class="settings-form">
+        <fieldset>
+          <legend>Reader connection</legend>
+          <div class="setting-row">
+            <label for="deviceAddress">Device address<input id="deviceAddress" name="device_address" required aria-describedby="deviceHelp deviceOverride" /></label>
+            <button class="button button-secondary" type="button" id="testConnectionBtn">Test connection</button>
+          </div>
+          <small id="deviceHelp">Use the address shown by your Xteink while it is in its supported transfer mode.</small>
+          <p class="inline-result" id="connectionResult" role="status" aria-live="polite"></p>
+          <p class="override-note" id="deviceOverride"></p>
+        </fieldset>
+        <fieldset>
+          <legend>Morning schedule</legend>
+          <div class="form-grid three-columns">
+            <label for="generationTime">Prepare at<input id="generationTime" name="generation_time" type="time" required /></label>
+            <label for="deliveryEnd">Retry delivery until<input id="deliveryEnd" name="delivery_window_end" type="time" required /></label>
+            <label for="timezone">Timezone<input id="timezone" name="timezone" required placeholder="America/New_York" /></label>
+          </div>
+          <p class="override-note" id="scheduleOverrides"></p>
+        </fieldset>
+        <details class="disclosure"><summary>Advanced configuration</summary><p class="muted">Environment variables take precedence over saved values. File paths and transfer endpoint details remain server-managed.</p></details>
+        <button class="button button-primary" type="submit">Save settings</button>
+        <p id="settingsResult" class="inline-result" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+  </main>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

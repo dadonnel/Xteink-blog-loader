@@ -154,20 +154,21 @@ def build_preflight_payload() -> dict:
 
 
 def build_manual_upload_payload():
+    upload_host = settings_store.effective()["device_address"]
     state = UploadState(UPLOAD_STATE_FILE)
     pending_items = ensure_records_for_files(state, list(UPLOAD_SYNC_DIR.glob("*.epub")))
     pending_before = len(pending_items)
     pending_keys = [key for key, _ in pending_items]
 
     if not host_reachable(
-        UPLOAD_HOST,
+        upload_host,
         UPLOAD_REACHABILITY_METHOD,
         UPLOAD_TCP_PORT,
         UPLOAD_CONNECT_TIMEOUT,
     ):
         return {
             "status": "unreachable",
-            "host": UPLOAD_HOST,
+            "host": upload_host,
             "pending_before": pending_before,
             "pending_after": pending_before,
             "uploaded_now": 0,
@@ -175,7 +176,7 @@ def build_manual_upload_payload():
             "failed_items": [],
         }, HTTPStatus.SERVICE_UNAVAILABLE
 
-    try_upload_pending(state, UPLOAD_SYNC_DIR, UPLOAD_HOST, UPLOAD_PATH, UPLOAD_FIELD_NAME)
+    try_upload_pending(state, UPLOAD_SYNC_DIR, upload_host, UPLOAD_PATH, UPLOAD_FIELD_NAME)
     state.save()
 
     pending_after = len(
@@ -197,7 +198,7 @@ def build_manual_upload_payload():
 
     return {
         "status": "ok" if not failed_items else "partial",
-        "host": UPLOAD_HOST,
+        "host": upload_host,
         "pending_before": pending_before,
         "pending_after": pending_after,
         "uploaded_now": uploaded_now,
@@ -327,6 +328,7 @@ def build_upload_edition_payload(edition_id: str):
 
 
 def build_upload_latest_epub_payload():
+    upload_host = settings_store.effective()["device_address"]
     state = UploadState(UPLOAD_STATE_FILE)
     epub_files = list_epubs(UPLOAD_SYNC_DIR)
     if not epub_files:
@@ -340,20 +342,20 @@ def build_upload_latest_epub_payload():
     key = pending[0][0] if pending else None
 
     if not host_reachable(
-        UPLOAD_HOST,
+        upload_host,
         UPLOAD_REACHABILITY_METHOD,
         UPLOAD_TCP_PORT,
         UPLOAD_CONNECT_TIMEOUT,
     ):
         return {
             "status": "unreachable",
-            "host": UPLOAD_HOST,
+            "host": upload_host,
             "filepath": str(latest_epub),
             "filename": latest_epub.name,
             "reason": "Device is unreachable",
         }, HTTPStatus.SERVICE_UNAVAILABLE
 
-    ok, response_text = upload_file(latest_epub, UPLOAD_HOST, UPLOAD_PATH, UPLOAD_FIELD_NAME)
+    ok, response_text = upload_file(latest_epub, upload_host, UPLOAD_PATH, UPLOAD_FIELD_NAME)
     if key:
         rec = state.records.get(key, {})
         rec["last_attempt_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -367,7 +369,7 @@ def build_upload_latest_epub_payload():
     if not ok:
         return {
             "status": "error",
-            "host": UPLOAD_HOST,
+            "host": upload_host,
             "filepath": str(latest_epub),
             "filename": latest_epub.name,
             "reason": response_text or "unknown upload failure",
@@ -375,7 +377,7 @@ def build_upload_latest_epub_payload():
 
     return {
         "status": "ok",
-        "host": UPLOAD_HOST,
+        "host": upload_host,
         "filepath": str(latest_epub),
         "filename": latest_epub.name,
         "response": response_text,
@@ -522,15 +524,16 @@ def build_upload_file_payload(filename: str):
     if not target.exists() or not target.is_file():
         return {"status": "error", "reason": "file not found"}, HTTPStatus.NOT_FOUND
 
+    upload_host = settings_store.effective()["device_address"]
     if not host_reachable(
-        UPLOAD_HOST,
+        upload_host,
         UPLOAD_REACHABILITY_METHOD,
         UPLOAD_TCP_PORT,
         UPLOAD_CONNECT_TIMEOUT,
     ):
         return {
             "status": "unreachable",
-            "host": UPLOAD_HOST,
+            "host": upload_host,
             "filename": filename,
             "reason": "Device is unreachable",
         }, HTTPStatus.SERVICE_UNAVAILABLE
@@ -539,7 +542,7 @@ def build_upload_file_payload(filename: str):
     pending = ensure_records_for_files(state, [target])
     key = pending[0][0] if pending else _find_record_for_file(state, target)[0]
 
-    ok, response_text = upload_file(target, UPLOAD_HOST, UPLOAD_PATH, UPLOAD_FIELD_NAME)
+    ok, response_text = upload_file(target, upload_host, UPLOAD_PATH, UPLOAD_FIELD_NAME)
     if key:
         rec = state.records.get(key, {})
         rec["last_attempt_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -553,14 +556,14 @@ def build_upload_file_payload(filename: str):
     if not ok:
         return {
             "status": "error",
-            "host": UPLOAD_HOST,
+            "host": upload_host,
             "filename": filename,
             "reason": response_text or "unknown upload failure",
         }, HTTPStatus.BAD_GATEWAY
 
     return {
         "status": "ok",
-        "host": UPLOAD_HOST,
+        "host": upload_host,
         "filename": filename,
         "response": response_text,
     }, HTTPStatus.OK
@@ -619,28 +622,28 @@ def _render_feed_groups() -> str:
         return "<p class='error'>Unable to parse feeds.opml.</p>"
 
     if not feeds:
-        return "<p>No feeds configured yet.</p>"
+        return "<div class='empty-state'><strong>No sources yet.</strong><br/>Add a source above to prepare your first reading.</div>"
 
     parts = []
     for category, feed_items in feeds.items():
-        parts.append(f"<h3>{html.escape(category)}</h3><ul>")
+        parts.append(f"<section class='source-category'><h2>{html.escape(category)}</h2><ul class='source-list'>")
         for feed in feed_items:
             state_label = "Paused" if feed.paused else "Active"
             parts.append(
-                "<li><div class='feed-row'>"
-                f"<strong>{html.escape(feed.name)}</strong> "
-                f"<span class='url'>{html.escape(feed.url)}</span>"
-                f"<span>{state_label}</span>"
-                "<form method='post' action='/feeds/pause' style='display:inline'>"
+                "<li class='source-item'><div>"
+                f"<span class='source-name'>{html.escape(feed.name)}</span> "
+                f"<span class='state-chip {'paused' if feed.paused else ''}'>{state_label}</span>"
+                f"<span class='source-url'>{html.escape(feed.url)}</span></div>"
+                "<div class='source-actions'><form method='post' action='/feeds/pause'>"
                 f"<input type='hidden' name='feed_id' value='{html.escape(feed.feed_id)}'/>"
                 f"<input type='hidden' name='paused' value='{'false' if feed.paused else 'true'}'/>"
-                f"<button type='submit'>{'Resume' if feed.paused else 'Pause'}</button></form>"
-                "<form method='post' action='/feeds/delete' style='display:inline'>"
+                f"<button class='text-button' type='submit'>{'Resume' if feed.paused else 'Pause'}</button></form>"
+                "<form method='post' action='/feeds/delete'>"
                 f"<input type='hidden' name='feed_id' value='{html.escape(feed.feed_id)}'/>"
-                "<button class='delete-feed' type='submit'>Remove subscription</button>"
+                "<button class='text-button danger-text' type='submit'>Remove</button>"
                 "</form></div></li>"
             )
-        parts.append("</ul>")
+        parts.append("</ul></section>")
     return "".join(parts)
 
 
@@ -1190,6 +1193,37 @@ def render_index_html(
 """
 
 
+def render_reader_html(
+    message: str = "", error: str = "", form_data: dict | None = None, active_page: str = "today"
+) -> str:
+    """Render the quiet reading-desk shell while preserving the small Python server."""
+    form_data = form_data or {}
+    page_names = {"today": "Today", "editions": "Editions", "sources": "Sources", "settings": "Settings"}
+    if active_page not in page_names:
+        active_page = "today"
+    template = (BASE_DIR / "templates" / "reader.html").read_text(encoding="utf-8")
+    replacements = {
+        "PAGE_TITLE": page_names[active_page],
+        "ACTIVE_PAGE": active_page,
+        "MESSAGE_TEXT": html.escape(message),
+        "ERROR_TEXT": html.escape(error),
+        "MESSAGE_HIDDEN": "" if message else "hidden",
+        "ERROR_HIDDEN": "" if error else "hidden",
+        "FORM_DAYS": html.escape(str(form_data.get("days_back", "3"))),
+        "FORM_NAME": html.escape(str(form_data.get("name", ""))),
+        "FORM_URL": html.escape(str(form_data.get("url", ""))),
+        "FORM_CATEGORY": html.escape(str(form_data.get("category", ""))),
+        "FEED_GROUPS": _render_feed_groups(),
+    }
+    for page in page_names:
+        upper = page.upper()
+        replacements[f"NAV_{upper}"] = 'aria-current="page"' if page == active_page else ""
+        replacements[f"PAGE_{upper}"] = "" if page == active_page else "hidden"
+    for token, value in replacements.items():
+        template = template.replace(token, value)
+    return template
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send_bytes(self, payload: bytes, content_type: str, status: int = HTTPStatus.OK):
         self.send_response(status)
@@ -1234,13 +1268,23 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/dashboard":
             history = HistoryStore(HISTORY_FILE).load()
-            editions = sorted(history["editions"].values(), key=lambda item: item.get("created_at", ""), reverse=True)
+            editions = []
+            for saved in history["editions"].values():
+                edition = dict(saved)
+                local_path = Path(edition.get("sync_file") or edition.get("output_file") or "")
+                edition["local_copy_exists"] = bool(local_path and local_path.is_file())
+                editions.append(edition)
+            editions.sort(key=lambda item: item.get("created_at", ""), reverse=True)
             with JOBS_LOCK:
                 active_jobs = [dict(job) for job in JOBS.values() if job.get("status") == "running"]
             latest = editions[0] if editions else None
             pending = [item for item in editions if item.get("delivery_status") in {"pending", "queued", "failed"}]
+            try:
+                subscription_count = sum(len(items) for items in store.parse_feeds().values())
+            except (FileNotFoundError, ET.ParseError):
+                subscription_count = 0
             effective = settings_store.effective()
-            payload = {"status": "ok", "latest_edition": latest, "pending_editions": pending, "active_jobs": active_jobs, "device_check": LAST_DEVICE_CHECK, "effective_schedule": {"generation_time": effective["generation_time"], "delivery_window_end": effective["delivery_window_end"], "timezone": effective["timezone"]}}
+            payload = {"status": "ok", "latest_edition": latest, "recent_editions": editions[:20], "pending_editions": pending, "active_jobs": active_jobs, "subscription_count": subscription_count, "device_check": LAST_DEVICE_CHECK, "effective_schedule": {"generation_time": effective["generation_time"], "delivery_window_end": effective["delivery_window_end"], "timezone": effective["timezone"]}}
             self._send_bytes(json.dumps(payload).encode("utf-8"), "application/json; charset=utf-8")
             return
 
@@ -1314,11 +1358,23 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/":
-            self._redirect("/dashboard")
+        if parsed.path in {"/static/app.css", "/static/app.js"}:
+            target = BASE_DIR / parsed.path.lstrip("/")
+            content_type = "text/css; charset=utf-8" if target.suffix == ".css" else "text/javascript; charset=utf-8"
+            self._send_bytes(target.read_bytes(), content_type)
             return
 
-        if parsed.path not in {"/dashboard", "/epubs", "/feeds", "/files", "/settings"}:
+        if parsed.path == "/":
+            self._redirect("/today")
+            return
+
+        legacy_redirects = {"/dashboard": "/today", "/epubs": "/editions", "/files": "/editions", "/feeds": "/sources"}
+        if parsed.path in legacy_redirects:
+            suffix = f"?{parsed.query}" if parsed.query else ""
+            self._redirect(legacy_redirects[parsed.path] + suffix)
+            return
+
+        if parsed.path not in {"/today", "/editions", "/sources", "/settings"}:
             self._send_bytes(b"Not found", "text/plain; charset=utf-8", HTTPStatus.NOT_FOUND)
             return
 
@@ -1329,7 +1385,7 @@ class Handler(BaseHTTPRequestHandler):
             "category": query.get("category", [""])[0],
             "days_back": query.get("days_back", ["3"])[0],
         }
-        html_text = render_index_html(
+        html_text = render_reader_html(
             message=query.get("message", [""])[0],
             error=query.get("error", [""])[0],
             form_data=form_data,
@@ -1398,15 +1454,23 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/prepare-and-send":
             payload = self._read_json_data()
-            try:
-                days_back = int(payload.get("days_back", 3))
-            except (TypeError, ValueError):
-                self._send_bytes(json.dumps({"status": "error", "reason": "days_back must be an integer"}).encode("utf-8"), "application/json; charset=utf-8", HTTPStatus.BAD_REQUEST)
-                return
+            include_previous = bool(payload.get("include_previous"))
+            preset = str(payload.get("preset") or "full")
+            if payload.get("backfill_to_last_generated"):
+                days_back, reason = infer_days_back_from_latest_epub()
+                if days_back is None:
+                    self._send_bytes(json.dumps({"status": "error", "reason": reason}).encode("utf-8"), "application/json; charset=utf-8", HTTPStatus.BAD_REQUEST)
+                    return
+            else:
+                try:
+                    days_back = int(payload.get("days_back", 3))
+                except (TypeError, ValueError):
+                    self._send_bytes(json.dumps({"status": "error", "reason": "days_back must be an integer"}).encode("utf-8"), "application/json; charset=utf-8", HTTPStatus.BAD_REQUEST)
+                    return
 
             def _prepare_and_send_job():
                 _set_job_stage("prepare-and-send", "fetching_and_extracting", "Fetching feeds and extracting new articles")
-                generated, status = build_generate_epub_payload(days_back)
+                generated, status = build_generate_epub_payload(days_back, include_previous=include_previous, preset=preset)
                 if status != HTTPStatus.OK or generated.get("status") not in {"created", "created_with_warnings"}:
                     return generated, status
                 _set_job_stage("prepare-and-send", "sending", f"Sending edition {generated['edition_id']}")

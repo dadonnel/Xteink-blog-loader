@@ -113,9 +113,30 @@ The control panel is the recommended entry point. From the repository root:
 python app.py
 ```
 
-Open `http://127.0.0.1:5001/`. The dashboard prepares an edition, shows the exact
-article count and reading estimate, and sends that same edition. If the reader is
-offline, the built edition remains pending and can be retried without rebuilding.
+Open `http://127.0.0.1:5001/`. Xteink Reader is organized around four destinations:
+**Today** for the current reading and delivery state, **Editions** for preparation
+and saved copies, **Sources** for subscriptions, and **Settings** for the reader and
+morning schedule. The legacy `/dashboard`, `/epubs`, `/files`, and `/feeds` URLs
+redirect to their new destinations.
+
+Preparing and sending are separate choices. The interface shows the exact article
+count and reading estimate for a built edition, and sends that same edition. If the
+reader is offline, the built edition remains pending and can be retried without
+rebuilding.
+
+### Interface previews
+
+- [Today: first-use state](artifacts/screenshots/today-empty-desktop.png)
+- [Today: preparing an edition](artifacts/screenshots/today-preparing-desktop.png)
+- [Today: edition ready](artifacts/screenshots/today-ready-desktop.png)
+- [Today: reader offline](artifacts/screenshots/today-offline-desktop.png)
+- [Editions](artifacts/screenshots/editions-desktop.png)
+- [Sources](artifacts/screenshots/sources-desktop.png)
+- [Settings](artifacts/screenshots/settings-desktop.png)
+- [Today at 390 px](artifacts/screenshots/today-empty-mobile.png)
+
+These previews use inert local fixtures. They do not fetch live feeds or contact a
+reader.
 
 The CLI (`python 3dayblogs.py`) remains available for automation. `web/app.py` is
 a legacy feed-only entry point on port 5000; it is retained for compatibility but
@@ -179,7 +200,8 @@ Example:
 curl -X POST http://127.0.0.1:5000/upload-epubs
 ```
 
-> Note: both apps default to port `5000`, so run them one at a time (or change one app's port).
+> Note: the legacy feed manager defaults to port `5000`; the main control panel
+> defaults to port `5001`, so they can run side by side.
 
 ## Configuration
 

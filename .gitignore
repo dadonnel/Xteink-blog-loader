@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local runtime data and generated books.
+storage/downloads/rss_epub/*.json
+storage/downloads/rss_epub/output_epubs/
