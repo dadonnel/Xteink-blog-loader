@@ -21,18 +21,24 @@ from morning_sync import (
     ensure_records_for_files,
     host_reachable,
     list_epubs,
+    make_record_key,
     try_upload_pending,
     upload_file,
 )
 from opml_store import OPMLStore, ValidationError
 
 BASE_DIR = Path(__file__).parent
+sys.path.insert(0, str(BASE_DIR / "src"))
+
+from rss_epub.config import HISTORY_FILE as DEFAULT_HISTORY_FILE, JOBS_FILE as DEFAULT_JOBS_FILE
+from rss_epub.history import HistoryStore
+from rss_epub.settings import SettingsStore
 SOURCES_FILE = os.environ.get("SOURCES_FILE", str(BASE_DIR / "feeds.opml"))
 VALIDATION_TIMEOUT_SECONDS = int(os.environ.get("VALIDATION_TIMEOUT_SECONDS", "10"))
 VALIDATION_MAX_WORKERS = int(os.environ.get("VALIDATION_MAX_WORKERS", "10"))
 UPLOAD_HOST = os.environ.get("MORNING_SYNC_HOST", "192.168.1.211")
 UPLOAD_SYNC_DIR = Path(
-    os.environ.get("MORNING_SYNC_SYNC_DIR", "storage/downloads/rss_epub/output_epubs/xteink_sync")
+    os.environ.get("MORNING_SYNC_SYNC_DIR", str(Path(os.environ.get("OUTPUT_DIR", "storage/downloads/rss_epub/output_epubs")) / "xteink_sync"))
 )
 UPLOAD_STATE_FILE = Path(
     os.environ.get("MORNING_SYNC_STATE_FILE", "storage/downloads/rss_epub/upload_state.json")
@@ -42,12 +48,49 @@ UPLOAD_FIELD_NAME = os.environ.get("MORNING_SYNC_UPLOAD_FIELD_NAME", "file")
 UPLOAD_REACHABILITY_METHOD = os.environ.get("MORNING_SYNC_REACHABILITY_METHOD", "auto")
 UPLOAD_TCP_PORT = int(os.environ.get("MORNING_SYNC_TCP_PORT", "80"))
 UPLOAD_CONNECT_TIMEOUT = float(os.environ.get("MORNING_SYNC_CONNECT_TIMEOUT", "1.0"))
+HISTORY_FILE = Path(os.environ.get("EDITION_HISTORY_FILE", str(DEFAULT_HISTORY_FILE)))
+JOBS_STATE_FILE = Path(os.environ.get("JOBS_STATE_FILE", str(DEFAULT_JOBS_FILE)))
 GENERATE_SCRIPT = Path(os.environ.get("GENERATE_EPUB_SCRIPT", str(BASE_DIR / "3dayblogs.py")))
 GENERATE_TIMEOUT_SECONDS = int(os.environ.get("GENERATE_EPUB_TIMEOUT_SECONDS", "900"))
 
 store = OPMLStore(SOURCES_FILE)
-JOBS: dict[str, dict] = {}
+settings_store = SettingsStore()
+LAST_DEVICE_CHECK: dict = {"status": "not_checked", "checked_at": None}
+def _load_jobs() -> dict[str, dict]:
+    if not JOBS_STATE_FILE.exists():
+        return {}
+    try:
+        loaded = json.loads(JOBS_STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    for job in loaded.values():
+        if job.get("status") == "running":
+            job["status"] = "interrupted"
+            job["stage"] = "interrupted"
+            job["logs"] = list(job.get("logs") or []) + ["Server restarted before this job completed."]
+    return loaded
+
+
+JOBS: dict[str, dict] = _load_jobs()
 JOBS_LOCK = threading.Lock()
+
+
+def _save_jobs_locked() -> None:
+    JOBS_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temp = JOBS_STATE_FILE.with_suffix(JOBS_STATE_FILE.suffix + ".tmp")
+    temp.write_text(json.dumps(JOBS, indent=2, sort_keys=True), encoding="utf-8")
+    temp.replace(JOBS_STATE_FILE)
+
+
+def _set_job_stage(action: str, stage: str, log: str) -> None:
+    with JOBS_LOCK:
+        for job in JOBS.values():
+            if job.get("action") == action and job.get("status") == "running":
+                job["stage"] = stage
+                job["updated_at"] = time.time()
+                job.setdefault("logs", []).append(log)
+                _save_jobs_locked()
+                return
 
 
 def load_sources(path: str = SOURCES_FILE):
@@ -62,10 +105,12 @@ def load_sources(path: str = SOURCES_FILE):
     root = tree.getroot()
 
     for outline in root.findall('.//outline[@xmlUrl]'):
+        if (outline.get("paused") or "false").lower() == "true":
+            continue
         name = outline.get("text") or outline.get("title") or "Untitled Feed"
         url = outline.get("xmlUrl")
         if url:
-            feeds.append({"name": name, "url": url})
+            feeds.append({"name": name, "url": url, "feed_type": outline.get("type") or "rss"})
 
     return feeds
 
@@ -89,6 +134,23 @@ def build_validate_payload(auto_discover_invalid_feeds: bool = False):
         }
         for result in results
     ]
+
+
+def build_preflight_payload() -> dict:
+    checks = []
+    for label, path in (("subscriptions", Path(SOURCES_FILE)), ("edition output", UPLOAD_SYNC_DIR), ("state", HISTORY_FILE.parent)):
+        target = path if label == "subscriptions" else path
+        exists = target.exists()
+        writable_parent = os.access(target if target.is_dir() else target.parent, os.W_OK) if (target if target.is_dir() else target.parent).exists() else os.access((target if target.is_dir() else target.parent).parent, os.W_OK)
+        checks.append({"name": label, "ok": bool(exists or writable_parent), "detail": str(target)})
+    try:
+        feed_count = sum(len(items) for items in store.parse_feeds().values())
+    except (FileNotFoundError, ET.ParseError):
+        feed_count = 0
+    checks.append({"name": "active subscriptions", "ok": feed_count > 0, "detail": f"{feed_count} configured; zero is supported but cannot create an edition"})
+    settings = settings_store.effective()
+    checks.append({"name": "device address", "ok": bool(settings.get("device_address")), "detail": settings.get("device_address") or "not configured"})
+    return {"status": "ok" if all(item["ok"] for item in checks if item["name"] != "active subscriptions") else "attention", "checks": checks}
 
 
 def build_manual_upload_payload():
@@ -158,7 +220,7 @@ def infer_days_back_from_latest_epub(sync_dir: Path = UPLOAD_SYNC_DIR) -> tuple[
     return days_back, latest_generated_at.isoformat()
 
 
-def build_generate_epub_payload(days_back: int):
+def build_generate_epub_payload(days_back: int, *, include_previous: bool = False, preset: str = "full"):
     if days_back < 1:
         return {
             "status": "error",
@@ -167,6 +229,8 @@ def build_generate_epub_payload(days_back: int):
 
     env = os.environ.copy()
     env["DAYS_BACK"] = str(days_back)
+    env["INCLUDE_PREVIOUS_ARTICLES"] = "true" if include_previous else "false"
+    env["EDITION_PRESET"] = preset if preset in {"quick", "commute", "full"} else "full"
 
     try:
         result = subprocess.run(
@@ -193,7 +257,16 @@ def build_generate_epub_payload(days_back: int):
         line for line in [result.stdout.strip(), result.stderr.strip()] if line
     ).strip()
 
-    if result.returncode != 0:
+    structured = None
+    for line in reversed(result.stdout.splitlines()):
+        if line.startswith("XTEINK_RESULT_JSON="):
+            try:
+                structured = json.loads(line.split("=", 1)[1])
+            except json.JSONDecodeError:
+                structured = None
+            break
+
+    if result.returncode != 0 or not structured:
         reason = "EPUB generation failed"
         if output:
             reason = output.splitlines()[-1][:240]
@@ -205,11 +278,51 @@ def build_generate_epub_payload(days_back: int):
             "output": output,
         }, HTTPStatus.INTERNAL_SERVER_ERROR
 
+    structured.update({"days_back": days_back, "returncode": result.returncode, "output": output})
+    # A clean process exit is not proof that a book exists.
+    if structured.get("status") not in {"created", "created_with_warnings", "no_new_articles", "no_extractable_articles"}:
+        structured.setdefault("reason", "Generation failed")
+        return structured, HTTPStatus.INTERNAL_SERVER_ERROR
+    return structured, HTTPStatus.OK
+
+
+def build_upload_edition_payload(edition_id: str):
+    """Upload exactly the edition named by a generation result."""
+    history = HistoryStore(HISTORY_FILE)
+    edition = history.load()["editions"].get(edition_id)
+    if not edition:
+        return {"status": "error", "reason": "Edition not found or expired.", "edition_id": edition_id}, HTTPStatus.NOT_FOUND
+    target = Path(edition.get("sync_file") or edition.get("output_file") or "")
+    if not target.exists() or not target.is_file():
+        return {"status": "error", "reason": "The local copy for this edition is missing.", "edition_id": edition_id}, HTTPStatus.NOT_FOUND
+    upload_state = UploadState(UPLOAD_STATE_FILE)
+    pending = ensure_records_for_files(upload_state, [target])
+    upload_key = pending[0][0] if pending else _find_record_for_file(upload_state, target)[0]
+    host = settings_store.effective()["device_address"]
+    if not host_reachable(host, UPLOAD_REACHABILITY_METHOD, UPLOAD_TCP_PORT, UPLOAD_CONNECT_TIMEOUT):
+        history.update_delivery(edition_id, status="queued", detail="Device unreachable")
+        upload_state.save()
+        return {
+            "status": "queued", "edition_id": edition_id, "filename": target.name,
+            "host": host, "reason": "Device is offline. This edition remains queued for retry.",
+        }, HTTPStatus.SERVICE_UNAVAILABLE
+    ok, response_text = upload_file(target, host, UPLOAD_PATH, UPLOAD_FIELD_NAME)
+    if upload_key:
+        record = upload_state.records[upload_key]
+        record["last_attempt_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        record["attempt_count"] = int(record.get("attempt_count", 0)) + 1
+        record["uploaded_successfully"] = bool(ok)
+        record["uploaded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if ok else None
+        record["error"] = None if ok else response_text
+        record["edition_id"] = edition_id
+        upload_state.save()
+    history.update_delivery(edition_id, status="uploaded" if ok else "failed", detail=response_text or None)
+    if not ok:
+        return {"status": "error", "edition_id": edition_id, "filename": target.name, "reason": response_text or "Upload failed"}, HTTPStatus.BAD_GATEWAY
     return {
-        "status": "ok",
-        "days_back": days_back,
-        "returncode": result.returncode,
-        "output": output,
+        "status": "uploaded", "edition_id": edition_id, "filename": target.name,
+        "host": host, "response": response_text,
+        "delivery_claim": "The device accepted the upload request; on-screen library visibility was not verified.",
     }, HTTPStatus.OK
 
 
@@ -270,6 +383,12 @@ def build_upload_latest_epub_payload():
 
 
 def _find_record_for_file(state: UploadState, path: Path) -> tuple[str | None, dict]:
+    try:
+        current_key = make_record_key(path)
+    except OSError:
+        return None, {}
+    if current_key in state.records:
+        return current_key, state.records[current_key]
     resolved = str(path.resolve())
     matched = [
         (key, record)
@@ -321,22 +440,25 @@ def build_delete_uploaded_epubs_payload():
 
     deleted_files: list[str] = []
     failed_files: list[dict[str, str]] = []
+    newest = max(epub_files, key=lambda path: path.stat().st_mtime, default=None)
+    trash_dir = UPLOAD_SYNC_DIR / ".trash"
     for epub_file in epub_files:
+        if newest is not None and epub_file == newest:
+            continue
         _, record = _find_record_for_file(state, epub_file)
         if not record.get("uploaded_successfully", False):
             continue
         try:
-            epub_file.unlink()
+            trash_dir.mkdir(parents=True, exist_ok=True)
+            destination = trash_dir / epub_file.name
+            if destination.exists():
+                destination = trash_dir / f"{int(time.time())}-{epub_file.name}"
+            epub_file.replace(destination)
             deleted_files.append(epub_file.name)
         except OSError as exc:
             failed_files.append({"name": epub_file.name, "error": str(exc)})
 
-    if deleted_files:
-        deleted_paths = {str((UPLOAD_SYNC_DIR / name).resolve()) for name in deleted_files}
-        for key in list(state.records.keys()):
-            if state.records[key].get("filepath") in deleted_paths:
-                del state.records[key]
-        state.save()
+    state.save()
 
     status = "ok" if not failed_files else "partial"
     return {
@@ -345,7 +467,23 @@ def build_delete_uploaded_epubs_payload():
         "deleted_files": deleted_files,
         "failed_count": len(failed_files),
         "failed_files": failed_files,
+        "preserved_newest": newest.name if newest else None,
+        "recoverable": True,
+        "trash_directory": str(trash_dir),
     }, HTTPStatus.OK
+
+
+def build_cleanup_preview_payload():
+    state = UploadState(UPLOAD_STATE_FILE)
+    files = list_epubs(UPLOAD_SYNC_DIR)
+    ensure_records_for_files(state, files)
+    newest = max(files, key=lambda path: path.stat().st_mtime, default=None)
+    eligible = []
+    for path in files:
+        _, record = _find_record_for_file(state, path)
+        if path != newest and record.get("uploaded_successfully", False):
+            eligible.append(path.name)
+    return {"status": "ok", "files": eligible, "preserved_newest": newest.name if newest else None, "action": "move_to_trash"}, HTTPStatus.OK
 
 
 def build_delete_file_payload(filename: str):
@@ -360,17 +498,18 @@ def build_delete_file_payload(filename: str):
 
     state = UploadState(UPLOAD_STATE_FILE)
     try:
-        target.unlink()
+        trash_dir = UPLOAD_SYNC_DIR / ".trash"
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        destination = trash_dir / target.name
+        if destination.exists():
+            destination = trash_dir / f"{int(time.time())}-{target.name}"
+        target.replace(destination)
     except OSError as exc:
         return {"status": "error", "reason": str(exc), "filename": filename}, HTTPStatus.BAD_REQUEST
 
-    target_path = str(target)
-    for key in list(state.records.keys()):
-        if state.records[key].get("filepath") == target_path:
-            del state.records[key]
     state.save()
 
-    return {"status": "ok", "filename": filename}, HTTPStatus.OK
+    return {"status": "ok", "filename": filename, "recoverable": True, "trash_name": destination.name}, HTTPStatus.OK
 
 
 def build_upload_file_payload(filename: str):
@@ -428,35 +567,44 @@ def build_upload_file_payload(filename: str):
 
 
 def _start_background_job(action: str, worker):
-    job_id = uuid4().hex
     with JOBS_LOCK:
+        for existing in JOBS.values():
+            if existing.get("action") == action and existing.get("status") == "running":
+                return existing["job_id"]
+        job_id = uuid4().hex
         JOBS[job_id] = {
             "job_id": job_id,
             "action": action,
             "status": "running",
+            "stage": "starting",
             "created_at": time.time(),
             "updated_at": time.time(),
             "logs": [f"Started: {action}"],
             "result": None,
             "http_status": int(HTTPStatus.OK),
         }
+        _save_jobs_locked()
 
     def _run():
         try:
             payload, status = worker()
             with JOBS_LOCK:
                 JOBS[job_id]["status"] = "succeeded" if int(status) < 400 else "failed"
+                JOBS[job_id]["stage"] = "complete" if int(status) < 400 else "failed"
                 JOBS[job_id]["result"] = payload
                 JOBS[job_id]["http_status"] = int(status)
                 JOBS[job_id]["updated_at"] = time.time()
                 JOBS[job_id]["logs"].append(f"Finished with HTTP {int(status)}")
+                _save_jobs_locked()
         except Exception as exc:  # noqa: BLE001
             with JOBS_LOCK:
                 JOBS[job_id]["status"] = "failed"
+                JOBS[job_id]["stage"] = "failed"
                 JOBS[job_id]["result"] = {"status": "error", "reason": str(exc)}
                 JOBS[job_id]["http_status"] = int(HTTPStatus.INTERNAL_SERVER_ERROR)
                 JOBS[job_id]["updated_at"] = time.time()
                 JOBS[job_id]["logs"].append(f"Error: {exc}")
+                _save_jobs_locked()
 
     threading.Thread(target=_run, daemon=True).start()
     return job_id
@@ -477,13 +625,19 @@ def _render_feed_groups() -> str:
     for category, feed_items in feeds.items():
         parts.append(f"<h3>{html.escape(category)}</h3><ul>")
         for feed in feed_items:
+            state_label = "Paused" if feed.paused else "Active"
             parts.append(
                 "<li><div class='feed-row'>"
                 f"<strong>{html.escape(feed.name)}</strong> "
                 f"<span class='url'>{html.escape(feed.url)}</span>"
+                f"<span>{state_label}</span>"
+                "<form method='post' action='/feeds/pause' style='display:inline'>"
+                f"<input type='hidden' name='feed_id' value='{html.escape(feed.feed_id)}'/>"
+                f"<input type='hidden' name='paused' value='{'false' if feed.paused else 'true'}'/>"
+                f"<button type='submit'>{'Resume' if feed.paused else 'Pause'}</button></form>"
                 "<form method='post' action='/feeds/delete' style='display:inline'>"
                 f"<input type='hidden' name='feed_id' value='{html.escape(feed.feed_id)}'/>"
-                "<button type='submit'>Delete</button>"
+                "<button class='delete-feed' type='submit'>Remove subscription</button>"
                 "</form></div></li>"
             )
         parts.append("</ul>")
@@ -501,6 +655,8 @@ def render_index_html(
     epubs_display = "block" if active_page == "epubs" else "none"
     feeds_display = "block" if active_page == "feeds" else "none"
     files_display = "block" if active_page == "files" else "none"
+    settings_display = "block" if active_page == "settings" else "none"
+    nav_class = lambda page: "active" if active_page == page else ""
 
     return f"""<!doctype html>
 <html lang=\"en\">
@@ -509,10 +665,16 @@ def render_index_html(
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
   <title>RSS EPUB Control Panel</title>
   <style>
-    body {{ font-family: Inter, Arial, sans-serif; margin: 24px; background: #f4f7fb; color: #1c2430; }}
+    * {{ box-sizing: border-box; }}
+    body {{ font-family: Inter, Arial, sans-serif; margin: 24px; background: #f4f7fb; color: #1c2430; line-height: 1.45; }}
+    main {{ max-width: 1080px; margin: auto; }}
     .card {{ background: #fff; border: 1px solid #dce3ef; border-radius: 12px; padding: 1rem 1.2rem; margin-top: 1rem; box-shadow: 0 4px 12px rgba(0,0,0,0.04); }}
-    nav a {{ margin-right: 1rem; color: #1b4fa8; text-decoration: none; font-weight: 600; }}
-    button {{ padding: 8px 14px; font-size: 14px; border-radius: 8px; border: 1px solid #1b4fa8; background: #1b4fa8; color: #fff; }}
+    nav {{ display:flex; gap:.35rem; overflow-x:auto; padding:.25rem 0; }}
+    nav a {{ padding:.7rem .8rem; color: #1b4fa8; text-decoration: none; font-weight: 600; border-radius:8px; white-space:nowrap; }}
+    nav a.active {{ color:#fff; background:#1b4fa8; }}
+    button, input, select {{ min-height: 44px; font: inherit; }}
+    button {{ padding: 8px 14px; border-radius: 8px; border: 1px solid #1b4fa8; background: #1b4fa8; color: #fff; cursor:pointer; }}
+    button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {{ outline:3px solid #f59e0b; outline-offset:2px; }}
     table {{ border-collapse: collapse; width: 100%; margin-top: 16px; }}
     th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
     th {{ background: #f5f5f5; }}
@@ -528,22 +690,40 @@ def render_index_html(
     .url {{ color: #555; font-size: .9rem; }}
     section {{ margin-top: 2rem; }}
     pre {{ background: #0b1220; color: #e7edf8; border-radius: 8px; padding: .75rem; min-height: 90px; max-height: 260px; overflow: auto; }}
+    .readiness {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:.75rem; }}
+    .metric {{ padding:.8rem; background:#f7f9fc; border-radius:8px; }}
+    .metric strong {{ display:block; font-size:1.1rem; }}
+    .primary {{ font-size:1.05rem; padding:.85rem 1.1rem; }}
+    .edition-actions {{ display:flex; gap:.5rem; flex-wrap:wrap; margin-top:.75rem; }}
+    @media (max-width: 640px) {{
+      body {{ margin:12px; }} .card {{ padding:.85rem; }}
+      table, thead, tbody, tr, th, td {{ display:block; }} thead {{ position:absolute; left:-9999px; }}
+      tr {{ border:1px solid #dce3ef; border-radius:10px; padding:.65rem; margin:.65rem 0; }}
+      td {{ border:0; padding:.3rem 0; overflow-wrap:anywhere; }}
+      td::before {{ content:attr(data-label); font-weight:700; display:inline-block; min-width:7rem; }}
+    }}
   </style>
 </head>
-<body>
+<body><main>
   <h1>RSS EPUB Control Panel</h1>
   <nav>
-    <a href=\"/dashboard\">Dashboard</a>
-    <a href=\"/epubs\">EPUB Operations</a>
-    <a href=\"/files\">File Manager</a>
-    <a href=\"/feeds\">Feed Manager</a>
+    <a class=\"{nav_class('dashboard')}\" href=\"/dashboard\">Dashboard</a>
+    <a class=\"{nav_class('epubs')}\" href=\"/epubs\">Prepare</a>
+    <a class=\"{nav_class('files')}\" href=\"/files\">Local copies</a>
+    <a class=\"{nav_class('feeds')}\" href=\"/feeds\">Subscriptions</a>
+    <a class=\"{nav_class('settings')}\" href=\"/settings\">Settings</a>
   </nav>
 
   {message_html}
   {error_html}
 
   <section id=\"dashboard\" class=\"card\" style=\"display: {dashboard_display};\">
-    <h2>Feed Validation</h2>
+    <h2>Reading readiness</h2>
+    <div class=\"readiness\" id=\"readiness\"><div class=\"metric\">Latest edition<strong>Loading…</strong></div></div>
+    <p><button class=\"primary\" id=\"prepareSendBtn\">Prepare &amp; send new reading</button></p>
+    <div id=\"latestActions\" class=\"edition-actions\"></div>
+    <details><summary>Feed health and advanced actions</summary>
+    <h3>Feed Validation</h3>
     <label style=\"display:block;margin-bottom:.5rem;\">
       <input id=\"autoDiscoverInvalidFeeds\" type=\"checkbox\" />
       Try automated feed finder for invalid feed URLs
@@ -564,6 +744,7 @@ def render_index_html(
       </thead>
       <tbody id=\"resultsBody\"></tbody>
     </table>
+    </details>
   </section>
 
   <section id=\"epubs\" class=\"card\" style=\"display: {epubs_display};\">
@@ -571,20 +752,22 @@ def render_index_html(
     <form id=\"generateForm\">
       <label for=\"days_back\">Days back:</label>
       <input id=\"days_back\" type=\"number\" name=\"days_back\" min=\"1\" step=\"1\" value=\"{html.escape(form_data.get('days_back', '3'))}\" required />
+      <label for=\"editionPreset\">Edition size</label>
+      <select id=\"editionPreset\"><option value=\"quick\">Quick read · up to 6 articles / 9,000 words</option><option value=\"commute\">Commute · up to 15 / 25,000 words</option><option value=\"full\" selected>Full edition · up to 40 / 75,000 words</option></select>
+      <label style=\"display:block;margin-top:.6rem;\"><input id=\"includePrevious\" type=\"checkbox\" /> Include previously collected articles</label>
       <label style=\"display:block;margin-top:.6rem;\">
         <input id=\"backfillToLastGenerated\" type=\"checkbox\" />
         Auto-calculate days back from the most recently generated EPUB
       </label>
       <button type=\"submit\">Generate new EPUB</button>
     </form>
-    <h2>Send Latest Generated EPUB</h2>
-    <button id=\"sendLatestBtn\">Send latest EPUB to device</button>
+    <div id=\"generatedEdition\" class=\"edition-actions\"></div>
   </section>
 
   <section id=\"files\" class=\"card\" style=\"display: {files_display};\">
     <h2>File Management</h2>
     <button id=\"refreshFilesBtn\">Refresh file list</button>
-    <button id=\"deleteUploadedBtn\">Delete uploaded files</button>
+    <button id=\"deleteUploadedBtn\">Move delivered local copies to trash</button>
     <table>
       <thead>
         <tr>
@@ -602,22 +785,36 @@ def render_index_html(
 
   <section class=\"card\">
     <h2>Progress & Error Feedback</h2>
-    <p id=\"message\"></p>
-    <pre id=\"jobLog\">No active jobs.</pre>
+    <p id=\"message\" role=\"status\" aria-live=\"polite\"></p>
+    <details><summary>Details</summary><pre id=\"jobLog\">No active jobs.</pre></details>
   </section>
 
   <section id=\"feeds\" class=\"card\" style=\"display: {feeds_display};\">
     <h2>Feed Manager</h2>
     <h3>Add Feed</h3>
     <form method=\"post\" action=\"/feeds\">
-      <input name=\"name\" placeholder=\"Feed Name (optional)\" value=\"{html.escape(form_data.get('name', ''))}\" />
-      <input name=\"url\" placeholder=\"https://example.com/post/slug\" value=\"{html.escape(form_data.get('url', ''))}\" required />
-      <input name=\"category\" placeholder=\"Category (optional override)\" value=\"{html.escape(form_data.get('category', ''))}\" />
+      <label>Feed name (optional)<input name=\"name\" value=\"{html.escape(form_data.get('name', ''))}\" /></label>
+      <label>Website or feed URL<input name=\"url\" type=\"url\" value=\"{html.escape(form_data.get('url', ''))}\" required /></label>
+      <label>Category (optional)<input name=\"category\" value=\"{html.escape(form_data.get('category', ''))}\" /></label>
       <button type=\"submit\">Add Feed</button>
     </form>
 
     <h3>Current Feeds</h3>
     {_render_feed_groups()}
+  </section>
+
+  <section id=\"settings\" class=\"card\" style=\"display: {settings_display};\">
+    <h2>Device and schedule</h2>
+    <form id=\"settingsForm\">
+      <label for=\"deviceAddress\">Device address</label><input id=\"deviceAddress\" name=\"device_address\" required />
+      <button type=\"button\" id=\"testConnectionBtn\">Test connection</button><br/>
+      <label for=\"generationTime\">Morning generation time</label><input id=\"generationTime\" name=\"generation_time\" type=\"time\" required />
+      <label for=\"deliveryEnd\">Delivery retry window ends</label><input id=\"deliveryEnd\" name=\"delivery_window_end\" type=\"time\" required />
+      <label for=\"timezone\">Timezone</label><input id=\"timezone\" name=\"timezone\" required />
+      <button type=\"submit\">Save settings</button>
+    </form>
+    <p id=\"settingsOverrides\"></p>
+    <p>Connection success checks only network reachability. It does not upload a file or verify delivery. If unreachable, confirm the address, Wi-Fi network, and the reader's transfer mode.</p>
   </section>
 
   <script>
@@ -632,7 +829,22 @@ def render_index_html(
     const filesBody = document.getElementById('filesBody');
     const message = document.getElementById('message');
     const jobLog = document.getElementById('jobLog');
+    const prepareSendButton = document.getElementById('prepareSendBtn');
+    const readiness = document.getElementById('readiness');
+    const latestActions = document.getElementById('latestActions');
+    const generatedEdition = document.getElementById('generatedEdition');
+    const settingsForm = document.getElementById('settingsForm');
+    const testConnectionBtn = document.getElementById('testConnectionBtn');
     let activeJobId = null;
+
+    function appendCell(row, label, value, className = '') {{
+      const cell = document.createElement('td');
+      cell.dataset.label = label;
+      cell.textContent = value == null ? '' : String(value);
+      if (className) cell.className = className;
+      row.appendChild(cell);
+      return cell;
+    }}
 
     function renderRows(results) {{
       if (!tableBody) return;
@@ -640,13 +852,9 @@ def render_index_html(
       for (const row of results) {{
         const tr = document.createElement('tr');
         const statusText = row.status === 'ok' ? 'ok' : `error: ${{row.reason || 'unknown'}}`;
-        tr.innerHTML = `
-          <td>${{row.feed}}</td>
-          <td>${{row['1 day']}}</td>
-          <td>${{row['7 days']}}</td>
-          <td>${{row['30 days']}}</td>
-          <td class="${{row.status}}">${{statusText}}</td>
-        `;
+        appendCell(tr, 'Feed', row.feed);
+        appendCell(tr, '1 day', row['1 day']); appendCell(tr, '7 days', row['7 days']);
+        appendCell(tr, '30 days', row['30 days']); appendCell(tr, 'Status', statusText, row.status === 'ok' ? 'ok' : 'error');
         tableBody.appendChild(tr);
       }}
     }}
@@ -657,6 +865,7 @@ def render_index_html(
       if (sendLatestButton) sendLatestButton.disabled = disabled;
       if (refreshFilesBtn) refreshFilesBtn.disabled = disabled;
       if (deleteUploadedBtn) deleteUploadedBtn.disabled = disabled;
+      if (prepareSendButton) prepareSendButton.disabled = disabled;
       const submitBtn = generateForm ? generateForm.querySelector('button[type="submit"]') : null;
       if (submitBtn) submitBtn.disabled = disabled;
     }}
@@ -673,7 +882,7 @@ def render_index_html(
       filesBody.innerHTML = '';
       if (!files.length) {{
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td colspan=\"6\">No EPUB files found in output folder.</td>';
+        const cell = appendCell(tr, '', 'No local editions yet. Prepare new reading to create one.'); cell.colSpan = 6;
         filesBody.appendChild(tr);
         return;
       }}
@@ -681,18 +890,14 @@ def render_index_html(
       for (const file of files) {{
         const tr = document.createElement('tr');
         const uploadedLabel = file.uploaded ? `Yes${{file.uploaded_at ? ` (${{file.uploaded_at}})` : ''}}` : 'No';
-        tr.innerHTML = `
-          <td>${{file.name}}</td>
-          <td>${{formatBytes(file.size_bytes)}}</td>
-          <td class=\"${{file.uploaded ? 'ok' : ''}}\">${{uploadedLabel}}</td>
-          <td>${{file.attempt_count || 0}}</td>
-          <td>${{file.error || ''}}</td>
-          <td>
-            <button type=\"button\" data-action=\"download\" data-name=\"${{file.name}}\">Download</button>
-            <button type=\"button\" data-action=\"send\" data-name=\"${{file.name}}\">Send</button>
-            <button type=\"button\" data-action=\"delete\" data-name=\"${{file.name}}\">Delete</button>
-          </td>
-        `;
+        appendCell(tr, 'File', file.name); appendCell(tr, 'Size', formatBytes(file.size_bytes));
+        appendCell(tr, 'Uploaded', uploadedLabel, file.uploaded ? 'ok' : '');
+        appendCell(tr, 'Attempts', file.attempt_count || 0); appendCell(tr, 'Error', file.error || '');
+        const actions = appendCell(tr, 'Actions', '');
+        for (const [action, label] of [['download', 'Download'], ['send', 'Send'], ['delete', 'Delete local copy']]) {{
+          const button = document.createElement('button'); button.type = 'button'; button.dataset.action = action;
+          button.dataset.name = file.name; button.textContent = label; actions.appendChild(button);
+        }}
         filesBody.appendChild(tr);
       }}
     }}
@@ -704,14 +909,60 @@ def render_index_html(
       return payload;
     }}
 
+    function renderEditionActions(container, edition) {{
+      if (!container) return;
+      container.replaceChildren();
+      if (!edition || !edition.edition_id) return;
+      const send = document.createElement('button'); send.type = 'button'; send.textContent = 'Send this edition';
+      send.addEventListener('click', async () => {{
+        message.textContent = `Sending ${{edition.filename || 'this edition'}}…`;
+        const response = await fetch('/api/editions/send', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{edition_id:edition.edition_id}})}});
+        const accepted = await response.json();
+        if (!response.ok) {{ message.textContent = accepted.reason || 'Could not start delivery.'; return; }}
+        await pollJob(accepted.job_id, (delivery) => {{ message.textContent = delivery.status === 'queued' ? delivery.reason : `Upload accepted for ${{delivery.filename}}. Check the reader library to confirm it appears.`; }});
+      }});
+      const download = document.createElement('a'); download.href = `/api/editions/download?edition_id=${{encodeURIComponent(edition.edition_id)}}`; download.textContent = 'Download'; download.style.padding = '.65rem';
+      container.append(send, download);
+    }}
+
+    async function loadDashboard() {{
+      if (!readiness) return;
+      const response = await fetch('/api/dashboard'); const payload = await response.json(); readiness.replaceChildren();
+      const latest = payload.latest_edition;
+      const metrics = latest ? [['Latest edition', latest.created_at || 'Unknown time'], ['Reading', `${{latest.article_count || 0}} articles · ${{latest.estimated_reading_minutes || 0}} min`], ['Delivery', latest.delivery_status || 'pending'], ['Pending', String((payload.pending_editions || []).length)]] : [['Latest edition', 'None yet'], ['Next action', 'Prepare new reading']];
+      for (const [label, value] of metrics) {{ const item=document.createElement('div'); item.className='metric'; item.append(document.createTextNode(label)); const strong=document.createElement('strong'); strong.textContent=value; item.append(strong); readiness.append(item); }}
+      renderEditionActions(latestActions, latest);
+      const active = (payload.active_jobs || [])[0]; if (active) pollJob(active.job_id, () => loadDashboard());
+    }}
+
+    async function loadSettings() {{
+      if (!settingsForm) return;
+      const response = await fetch('/api/settings'); const values = await response.json();
+      settingsForm.elements.device_address.value = values.device_address || '';
+      settingsForm.elements.generation_time.value = values.generation_time || '06:00';
+      settingsForm.elements.delivery_window_end.value = values.delivery_window_end || '07:30';
+      settingsForm.elements.timezone.value = values.timezone || '';
+      const overrides = Object.entries(values.overridden_by_environment || {{}}).map(([key, env]) => `${{key}} is overridden by ${{env}}`);
+      document.getElementById('settingsOverrides').textContent = overrides.length ? overrides.join('. ') : 'No environment-variable overrides are active.';
+    }}
+
     async function pollJob(jobId, onSuccess) {{
       activeJobId = jobId;
+      sessionStorage.setItem('activeJobId', jobId);
       setButtonsDisabled(true);
+      let pollErrors = 0;
       while (activeJobId === jobId) {{
-        const response = await fetch(`/api/jobs/${{jobId}}`);
-        const payload = await response.json();
+        let response, payload;
+        try {{ response = await fetch(`/api/jobs/${{jobId}}`); payload = await response.json(); }}
+        catch (error) {{
+          pollErrors += 1; message.textContent = `Connection lost while checking progress (attempt ${{pollErrors}}). Retrying…`;
+          if (pollErrors >= 5) {{ setButtonsDisabled(false); sessionStorage.removeItem('activeJobId'); activeJobId=null; message.textContent='Progress could not be recovered. The operation may still be running; refresh to check.'; return; }}
+          await new Promise((resolve) => setTimeout(resolve, 1500)); continue;
+        }}
+        if (!response.ok) {{ setButtonsDisabled(false); sessionStorage.removeItem('activeJobId'); activeJobId=null; message.textContent = payload.reason || 'This job expired or no longer exists.'; return; }}
         jobLog.textContent = (payload.logs || []).join('\\n');
-        if (payload.status === 'succeeded' || payload.status === 'failed') {{
+        message.textContent = payload.stage === 'starting' ? 'Starting…' : `Working: ${{payload.stage || payload.action || 'in progress'}}`;
+        if (['succeeded', 'failed', 'interrupted'].includes(payload.status)) {{
           const result = payload.result || {{}};
           if (Array.isArray(result)) renderRows(result);
           if (payload.status === 'succeeded') {{
@@ -721,6 +972,7 @@ def render_index_html(
             message.textContent = `Failed: ${{reason}}`;
           }}
           setButtonsDisabled(false);
+          sessionStorage.removeItem('activeJobId');
           activeJobId = null;
           return;
         }}
@@ -774,6 +1026,8 @@ def render_index_html(
         event.preventDefault();
         const daysBack = parseInt(document.getElementById('days_back').value, 10);
         const backfillToLastGenerated = !!document.getElementById('backfillToLastGenerated')?.checked;
+        const includePrevious = !!document.getElementById('includePrevious')?.checked;
+        const preset = document.getElementById('editionPreset')?.value || 'full';
         message.textContent = backfillToLastGenerated
           ? 'Generating EPUB from the date of the most recent EPUB...'
           : `Generating EPUB for last ${{daysBack}} day(s)...`;
@@ -784,6 +1038,8 @@ def render_index_html(
             body: JSON.stringify({{
               days_back: daysBack,
               backfill_to_last_generated: backfillToLastGenerated,
+              include_previous: includePrevious,
+              preset,
             }}),
           }});
           const result = await response.json();
@@ -796,14 +1052,12 @@ def render_index_html(
             return;
           }}
           await pollJob(result.job_id, (payload) => {{
-            if (payload.status === 'ok') {{
-              if (payload.inferred_from_last_generated) {{
-                message.textContent = `Generation complete for ${{payload.days_back}} day(s) (from last EPUB date ${{payload.latest_generated_date}}).`;
-              }} else {{
-                message.textContent = `Generation complete for ${{payload.days_back}} day(s).`;
-              }}
+            if (payload.status === 'created' || payload.status === 'created_with_warnings') {{
+              message.textContent = `Edition ready: ${{payload.article_count}} article(s), about ${{payload.estimated_reading_minutes}} minutes.${{payload.warnings?.length ? ` ${{payload.warnings.length}} warning(s).` : ''}}`;
+              renderEditionActions(generatedEdition, payload);
             }} else {{
-              message.textContent = `Generation failed: ${{payload.reason || 'unknown'}}`;
+              message.textContent = payload.reason || 'No edition was created.';
+              if (generatedEdition) generatedEdition.replaceChildren();
             }}
           }});
         }} catch (error) {{
@@ -831,6 +1085,23 @@ def render_index_html(
       }});
     }}
 
+    if (prepareSendButton) {{
+      prepareSendButton.addEventListener('click', async () => {{
+        message.textContent = 'Fetching feeds…';
+        try {{
+          const response = await fetch('/api/prepare-and-send', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{days_back:3}})}});
+          const accepted = await response.json();
+          if (!response.ok) {{ message.textContent = accepted.reason || 'Could not start.'; return; }}
+          await pollJob(accepted.job_id, (payload) => {{
+            const edition = payload.generation;
+            if (edition?.edition_id) renderEditionActions(latestActions, edition);
+            message.textContent = payload.status === 'queued' ? 'Edition prepared. Reader is offline, so delivery is queued without rebuilding.' : `Edition prepared and upload accepted: ${{edition?.article_count || 0}} articles.`;
+            loadDashboard();
+          }});
+        }} catch (error) {{ message.textContent = `Prepare failed: ${{error.message}}`; }}
+      }});
+    }}
+
     if (refreshFilesBtn) {{
       refreshFilesBtn.addEventListener('click', async () => {{
         try {{
@@ -845,10 +1116,13 @@ def render_index_html(
     if (deleteUploadedBtn) {{
       deleteUploadedBtn.addEventListener('click', async () => {{
         try {{
+          const previewResponse = await fetch('/api/files/cleanup-preview'); const preview = await previewResponse.json();
+          if (!(preview.files || []).length) {{ message.textContent = `Nothing eligible for cleanup. Newest local copy preserved: ${{preview.preserved_newest || 'none'}}.`; return; }}
+          if (!window.confirm(`Move these local copies to recoverable trash?\\n\\n${{preview.files.join('\\n')}}\\n\\nNewest preserved: ${{preview.preserved_newest}}`)) return;
           const response = await fetch('/api/files/delete-uploaded', {{ method: 'POST' }});
           const payload = await response.json();
           await loadFiles();
-          message.textContent = `Deleted ${{payload.deleted_count || 0}} uploaded file(s).`;
+          message.textContent = `Moved ${{payload.deleted_count || 0}} delivered local copy/copies to trash.${{payload.failed_count ? ` ${{payload.failed_count}} failed.` : ''}}`;
         }} catch (error) {{
           message.textContent = `Failed to delete uploaded files: ${{error.message}}`;
         }}
@@ -901,8 +1175,17 @@ def render_index_html(
         message.textContent = `Failed to load files: ${{error.message}}`;
       }});
     }}
+    if (window.location.pathname === '/dashboard') {{ loadDashboard().catch((error) => {{ message.textContent = `Could not load reading status: ${{error.message}}`; }}); }}
+    if (settingsForm) {{
+      loadSettings().catch((error) => {{ message.textContent = `Could not load settings: ${{error.message}}`; }});
+      settingsForm.addEventListener('submit', async (event) => {{ event.preventDefault(); const values=Object.fromEntries(new FormData(settingsForm)); const response=await fetch('/api/settings', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(values)}}); const payload=await response.json(); message.textContent=response.ok?'Settings saved.':(payload.reason||'Settings were not saved.'); if(response.ok) loadSettings(); }});
+    }}
+    if (testConnectionBtn) {{ testConnectionBtn.addEventListener('click', async () => {{ message.textContent='Testing network connection…'; const response=await fetch('/api/device/test',{{method:'POST'}}); const payload=await response.json(); message.textContent=payload.reachable?`Network connection to ${{payload.host}} succeeded. No file was uploaded.`:`Could not reach ${{payload.host}}. Check the address, network, and transfer mode.`; }}); }}
+    for (const form of document.querySelectorAll('form[action="/feeds/delete"]')) {{ form.addEventListener('submit', (event) => {{ if (!window.confirm('Remove this subscription? You can add it again later.')) event.preventDefault(); }}); }}
+    const rememberedJob = sessionStorage.getItem('activeJobId');
+    if (rememberedJob && !activeJobId) pollJob(rememberedJob, () => {{ loadDashboard(); }});
   </script>
-</body>
+</main></body>
 </html>
 """
 
@@ -949,6 +1232,36 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
 
+        if parsed.path == "/api/dashboard":
+            history = HistoryStore(HISTORY_FILE).load()
+            editions = sorted(history["editions"].values(), key=lambda item: item.get("created_at", ""), reverse=True)
+            with JOBS_LOCK:
+                active_jobs = [dict(job) for job in JOBS.values() if job.get("status") == "running"]
+            latest = editions[0] if editions else None
+            pending = [item for item in editions if item.get("delivery_status") in {"pending", "queued", "failed"}]
+            effective = settings_store.effective()
+            payload = {"status": "ok", "latest_edition": latest, "pending_editions": pending, "active_jobs": active_jobs, "device_check": LAST_DEVICE_CHECK, "effective_schedule": {"generation_time": effective["generation_time"], "delivery_window_end": effective["delivery_window_end"], "timezone": effective["timezone"]}}
+            self._send_bytes(json.dumps(payload).encode("utf-8"), "application/json; charset=utf-8")
+            return
+
+        if parsed.path == "/api/settings":
+            self._send_bytes(json.dumps(settings_store.effective()).encode("utf-8"), "application/json; charset=utf-8")
+            return
+
+        if parsed.path == "/api/preflight":
+            self._send_bytes(json.dumps(build_preflight_payload()).encode("utf-8"), "application/json; charset=utf-8")
+            return
+
+        if parsed.path == "/api/editions/download":
+            edition_id = urllib.parse.parse_qs(parsed.query).get("edition_id", [""])[0]
+            edition = HistoryStore(HISTORY_FILE).load()["editions"].get(edition_id)
+            target = Path((edition or {}).get("sync_file") or (edition or {}).get("output_file") or "")
+            if not edition or not target.exists() or not target.is_file():
+                self._send_bytes(json.dumps({"status": "error", "reason": "edition file not found"}).encode("utf-8"), "application/json; charset=utf-8", HTTPStatus.NOT_FOUND)
+                return
+            self._send_file(target, target.name)
+            return
+
         if parsed.path == "/api/files":
             payload, status = build_file_manager_payload()
             self._send_bytes(
@@ -956,6 +1269,11 @@ class Handler(BaseHTTPRequestHandler):
                 "application/json; charset=utf-8",
                 status,
             )
+            return
+
+        if parsed.path == "/api/files/cleanup-preview":
+            payload, status = build_cleanup_preview_payload()
+            self._send_bytes(json.dumps(payload).encode("utf-8"), "application/json; charset=utf-8", status)
             return
 
         if parsed.path == "/api/files/download":
@@ -1000,7 +1318,7 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect("/dashboard")
             return
 
-        if parsed.path not in {"/dashboard", "/epubs", "/feeds", "/files"}:
+        if parsed.path not in {"/dashboard", "/epubs", "/feeds", "/files", "/settings"}:
             self._send_bytes(b"Not found", "text/plain; charset=utf-8", HTTPStatus.NOT_FOUND)
             return
 
@@ -1020,6 +1338,22 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(html_text.encode("utf-8"), "text/html; charset=utf-8")
 
     def do_POST(self):
+        if self.path == "/api/settings":
+            try:
+                payload = settings_store.update(self._read_json_data())
+            except ValueError as exc:
+                self._send_bytes(json.dumps({"status": "error", "reason": str(exc)}).encode("utf-8"), "application/json; charset=utf-8", HTTPStatus.BAD_REQUEST)
+                return
+            self._send_bytes(json.dumps(payload).encode("utf-8"), "application/json; charset=utf-8")
+            return
+
+        if self.path == "/api/device/test":
+            global LAST_DEVICE_CHECK
+            effective = settings_store.effective(); host = effective["device_address"]
+            reachable = host_reachable(host, UPLOAD_REACHABILITY_METHOD, UPLOAD_TCP_PORT, UPLOAD_CONNECT_TIMEOUT)
+            LAST_DEVICE_CHECK = {"status": "reachable" if reachable else "unreachable", "reachable": reachable, "host": host, "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "claim": "Network reachability only; no upload attempted."}
+            self._send_bytes(json.dumps(LAST_DEVICE_CHECK).encode("utf-8"), "application/json; charset=utf-8", HTTPStatus.OK if reachable else HTTPStatus.SERVICE_UNAVAILABLE)
+            return
         if self.path == "/api/validate":
             payload = self._read_json_data()
             auto_discover_invalid_feeds = bool(payload.get("auto_discover_invalid_feeds"))
@@ -1052,8 +1386,41 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        if self.path == "/api/editions/send":
+            payload = self._read_json_data()
+            edition_id = str(payload.get("edition_id") or "")
+            if not edition_id:
+                self._send_bytes(json.dumps({"status": "error", "reason": "edition_id is required"}).encode("utf-8"), "application/json; charset=utf-8", HTTPStatus.BAD_REQUEST)
+                return
+            job_id = _start_background_job(f"send-edition:{edition_id}", lambda: build_upload_edition_payload(edition_id))
+            self._send_bytes(json.dumps({"status": "accepted", "job_id": job_id, "edition_id": edition_id}).encode("utf-8"), "application/json; charset=utf-8", HTTPStatus.ACCEPTED)
+            return
+
+        if self.path == "/api/prepare-and-send":
+            payload = self._read_json_data()
+            try:
+                days_back = int(payload.get("days_back", 3))
+            except (TypeError, ValueError):
+                self._send_bytes(json.dumps({"status": "error", "reason": "days_back must be an integer"}).encode("utf-8"), "application/json; charset=utf-8", HTTPStatus.BAD_REQUEST)
+                return
+
+            def _prepare_and_send_job():
+                _set_job_stage("prepare-and-send", "fetching_and_extracting", "Fetching feeds and extracting new articles")
+                generated, status = build_generate_epub_payload(days_back)
+                if status != HTTPStatus.OK or generated.get("status") not in {"created", "created_with_warnings"}:
+                    return generated, status
+                _set_job_stage("prepare-and-send", "sending", f"Sending edition {generated['edition_id']}")
+                delivered, delivery_status = build_upload_edition_payload(generated["edition_id"])
+                return {"status": "complete" if delivery_status < 400 else "queued", "generation": generated, "delivery": delivered, "edition_id": generated["edition_id"]}, (HTTPStatus.OK if delivery_status in {HTTPStatus.OK, HTTPStatus.SERVICE_UNAVAILABLE} else delivery_status)
+
+            job_id = _start_background_job("prepare-and-send", _prepare_and_send_job)
+            self._send_bytes(json.dumps({"status": "accepted", "job_id": job_id}).encode("utf-8"), "application/json; charset=utf-8", HTTPStatus.ACCEPTED)
+            return
+
         if self.path == "/api/epubs/generate":
             payload = self._read_json_data()
+            include_previous = bool(payload.get("include_previous"))
+            preset = str(payload.get("preset") or "full")
             backfill_to_last_generated = bool(payload.get("backfill_to_last_generated"))
             if backfill_to_last_generated:
                 inferred_days_back, latest_generated_date = infer_days_back_from_latest_epub()
@@ -1080,7 +1447,11 @@ class Handler(BaseHTTPRequestHandler):
                     return
 
             def _generate_epub_job():
-                result_payload, status = build_generate_epub_payload(days_back)
+                _set_job_stage("generate-epub", "fetching_and_building", "Fetching feeds, extracting articles, and building EPUB")
+                if include_previous or preset != "full":
+                    result_payload, status = build_generate_epub_payload(days_back, include_previous=include_previous, preset=preset)
+                else:
+                    result_payload, status = build_generate_epub_payload(days_back)
                 if status == HTTPStatus.OK and backfill_to_last_generated:
                     result_payload["inferred_from_last_generated"] = True
                     result_payload["latest_generated_date"] = latest_generated_date
@@ -1208,6 +1579,17 @@ class Handler(BaseHTTPRequestHandler):
 
             query = urllib.parse.urlencode({"message": "Feed removed successfully."})
             self._redirect(f"/feeds?{query}")
+            return
+
+        if self.path == "/feeds/pause":
+            form = self._read_form_data(); feed_id = form.get("feed_id", ""); paused = form.get("paused", "false").lower() == "true"
+            try:
+                feed = store.update_feed(feed_id, paused=paused)
+            except (ValidationError, FileNotFoundError, ET.ParseError) as exc:
+                self._redirect(f"/feeds?{urllib.parse.urlencode({'error': str(exc)})}")
+                return
+            verb = "paused" if paused else "resumed"
+            self._redirect(f"/feeds?{urllib.parse.urlencode({'message': f'{feed.name} {verb}.'})}")
             return
 
         if self.path == "/generate-epub":

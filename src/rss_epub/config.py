@@ -1,5 +1,10 @@
-"""Shared configuration constants for RSS -> EPUB pipeline."""
+"""Shared configuration for the RSS -> EPUB pipeline.
 
+Every entry point imports these resolved paths so environment overrides behave
+the same in the CLI, web UI, and scheduler.
+"""
+
+import os
 from pathlib import Path
 
 # Base paths
@@ -7,12 +12,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 STORAGE_ROOT = PROJECT_ROOT / "storage" / "downloads" / "rss_epub"
 
 # Input/output files
-SOURCES_FILE = STORAGE_ROOT / "feeds.opml"
-OUTPUT_DIR = STORAGE_ROOT / "output_epubs"
-SYNC_DIR = OUTPUT_DIR / "xteink_sync"
+SOURCES_FILE = Path(os.getenv("SOURCES_FILE", str(STORAGE_ROOT / "feeds.opml")))
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", str(STORAGE_ROOT / "output_epubs")))
+SYNC_DIR = Path(os.getenv("MORNING_SYNC_SYNC_DIR", str(OUTPUT_DIR / "xteink_sync")))
+HISTORY_FILE = Path(os.getenv("EDITION_HISTORY_FILE", str(STORAGE_ROOT / "edition_history.json")))
+SETTINGS_FILE = Path(os.getenv("APP_SETTINGS_FILE", str(STORAGE_ROOT / "settings.json")))
+JOBS_FILE = Path(os.getenv("JOBS_STATE_FILE", str(STORAGE_ROOT / "jobs.json")))
 
 # Feed + article processing
-DAYS_BACK = 3
+DAYS_BACK = int(os.getenv("DAYS_BACK", "3"))
 REQUEST_TIMEOUT_SECONDS = 15
 STRICT_MIN_CONTENT_LENGTH = 500
 MIN_CONTENT_LENGTH = 300
